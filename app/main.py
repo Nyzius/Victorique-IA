@@ -1,0 +1,581 @@
+import re
+import uuid
+from pathlib import Path
+from typing import Optional, Dict, Any
+
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request
+from fastapi.responses import StreamingResponse, FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
+
+from app.config import settings, DOCS_DIR, BASE_DIR
+from app.memory.database import init_db, get_connection
+from app.memory.conversation_store import conversation_store
+from app.memory.memory_store import memory_store
+from app.memory.project_store import project_store
+from app.core.personality import personality_manager
+from app.core.assistant import assistant_engine
+from app.core.backup import create_backup, list_backups, backup_path, restore_backup
+from app.models.ollama_client import ollama_client
+from app.rag.vector_store import vector_store
+from app.security.permissions import security_manager
+from app.tools.registry import tool_registry
+
+# Initialize database schema on startup
+init_db()
+
+app = FastAPI(title=settings.app_name, version=settings.version)
+
+CSP = (
+    "default-src 'self'; "
+    "script-src 'self'; "
+    "style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data:; "
+    "font-src 'self'; "
+    "connect-src 'self'; "
+    "object-src 'none'; "
+    "base-uri 'none'; "
+    "form-action 'self'; "
+    "frame-ancestors 'none'"
+)
+
+
+def _local_hosts() -> set:
+    import os
+    hosts = {"127.0.0.1", "localhost", "::1"}
+    if os.environ.get("ASSISTANT_TESTING") == "1":
+        hosts.add("testserver")
+    return hosts
+
+
+def _local_origins() -> set:
+    origins = set(settings.allowed_origins)
+    origins.add(f"http://127.0.0.1:{settings.port}")
+    origins.add(f"http://localhost:{settings.port}")
+    return origins
+
+
+@app.middleware("http")
+async def security_middleware(request: Request, call_next):
+    """
+    Blocks DNS-rebinding (unexpected Host) and cross-site browser requests
+    (unexpected Origin) before any endpoint runs. No external CORS is allowed.
+    """
+    raw_host = request.headers.get("host", "")
+    host = raw_host.split(":")[0].strip("[]").lower()
+    if host and host not in _local_hosts():
+        return JSONResponse({"detail": "Host não permitido."}, status_code=400)
+
+    origin = request.headers.get("origin")
+    if origin and origin not in _local_origins():
+        return JSONResponse({"detail": "Origem não permitida."}, status_code=403)
+
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Content-Security-Policy"] = CSP
+    if request.url.path.startswith("/ui"):
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+# ----------------- Models & Schemas -----------------
+class ChatRequest(BaseModel):
+    conversation_id: Optional[str] = ""
+    message: str = Field(min_length=1)
+    model: Optional[str] = None
+    project_id: Optional[str] = None
+    personality_id: Optional[str] = None
+    enable_rag: bool = True
+
+class ConversationCreate(BaseModel):
+    title: Optional[str] = "Nova Conversa"
+    project_id: Optional[str] = None
+    personality_id: Optional[str] = None
+
+class ConversationUpdate(BaseModel):
+    title: str
+
+class PersonalityCreate(BaseModel):
+    id: Optional[str] = None
+    name: str
+    system_instructions: str
+    description: Optional[str] = ""
+    tone: Optional[str] = "prestativo"
+    formality: Optional[int] = 3
+    objectivity: Optional[int] = 4
+    detail_level: Optional[int] = 3
+    is_default: Optional[bool] = False
+
+class MemoryCreate(BaseModel):
+    category: str
+    content: str
+    project_id: Optional[str] = None
+
+class MemoryUpdate(BaseModel):
+    content: str
+    category: Optional[str] = None
+    is_active: Optional[bool] = None
+
+class ProjectCreate(BaseModel):
+    name: str
+    description: Optional[str] = ""
+    instructions: Optional[str] = ""
+
+class ProjectUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    instructions: Optional[str] = None
+
+class AuthorizeActionRequest(BaseModel):
+    action_id: str
+    approved: bool
+
+class ToolExecuteRequest(BaseModel):
+    tool_name: str
+    parameters: Dict[str, Any]
+    # Kept for API compatibility. It is NEVER trusted by the backend.
+    authorized: Optional[bool] = False
+
+class BackupCreate(BaseModel):
+    label: Optional[str] = "manual"
+
+class BackupRestoreRequest(BaseModel):
+    name: str
+    confirm: bool = False
+
+class SettingsUpdate(BaseModel):
+    default_model: Optional[str] = None
+
+
+def _get_setting(key: str, default: Optional[str] = None) -> Optional[str]:
+    with get_connection() as conn:
+        row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+        return row["value"] if row else default
+
+
+def _set_setting(key: str, value: str):
+    with get_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
+            """,
+            (key, value),
+        )
+
+
+def _current_model() -> str:
+    return _get_setting("default_model", settings.default_model) or settings.default_model
+
+
+# ----------------- System & Health -----------------
+@app.get("/api/health")
+async def health_check():
+    ollama_ok = await ollama_client.is_alive()
+    ollama_version = await ollama_client.get_version() if ollama_ok else None
+    models = await ollama_client.list_models() if ollama_ok else []
+    names = [m.get("name", "") for m in models]
+    active = _current_model()
+    return {
+        "status": "healthy" if ollama_ok else "degraded",
+        "app_name": settings.app_name,
+        "ollama_online": ollama_ok,
+        "ollama_version": ollama_version,
+        "models_count": len(models),
+        "default_model": active,
+        "default_model_installed": active in names if ollama_ok else None,
+    }
+
+@app.get("/api/models")
+async def list_models():
+    models = await ollama_client.list_models()
+    return {"models": models, "active_default": _current_model()}
+
+@app.get("/api/settings")
+async def get_settings():
+    return {
+        "default_model": _current_model(),
+        "max_context_tokens": settings.max_context_tokens,
+        "max_output_tokens": settings.max_output_tokens,
+        "authorization_ttl_seconds": settings.authorization_ttl_seconds,
+    }
+
+@app.post("/api/settings")
+async def update_settings(req: SettingsUpdate):
+    if req.default_model is not None:
+        name = req.default_model.strip()
+        if not name or len(name) > 120 or not re.fullmatch(r"[A-Za-z0-9._:/-]+", name):
+            raise HTTPException(status_code=400, detail="Nome de modelo inválido.")
+        _set_setting("default_model", name)
+        settings.default_model = name
+    return {"status": "updated", "default_model": _current_model()}
+
+# ----------------- Chat (Streaming) -----------------
+@app.post("/api/chat")
+async def chat_endpoint(req: ChatRequest, request: Request):
+    if len(req.message) > settings.max_message_chars:
+        raise HTTPException(status_code=413, detail="Mensagem longa demais.")
+
+    conv = None
+    if req.conversation_id:
+        conv = conversation_store.get_conversation(req.conversation_id)
+        if not conv:
+            raise HTTPException(status_code=404, detail="Conversa não encontrada.")
+    if req.project_id and not project_store.get_project(req.project_id):
+        raise HTTPException(status_code=400, detail="Projeto não encontrado.")
+    if req.personality_id and not personality_manager.get_personality(req.personality_id):
+        raise HTTPException(status_code=400, detail="Personalidade não encontrada.")
+
+    if not conv:
+        title = req.message.strip()[:60] or "Nova Conversa"
+        conv = conversation_store.create_conversation(
+            title=title,
+            project_id=req.project_id,
+            personality_id=req.personality_id,
+        )
+
+    async def event_generator():
+        agen = assistant_engine.chat_stream(
+            conversation_id=conv["id"],
+            user_message=req.message,
+            model=req.model or _current_model(),
+            project_id=req.project_id,
+            personality_id=req.personality_id,
+            enable_rag=req.enable_rag,
+        )
+        try:
+            async for chunk in agen:
+                if await request.is_disconnected():
+                    break
+                yield chunk
+        finally:
+            # Closing the async generator closes the Ollama HTTP stream too.
+            await agen.aclose()
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-store",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+# ----------------- Conversations -----------------
+@app.get("/api/conversations")
+async def get_conversations(project_id: Optional[str] = None):
+    return conversation_store.list_conversations(project_id)
+
+@app.get("/api/conversations/search")
+async def search_conversations(q: str = "", project_id: Optional[str] = None):
+    if not q.strip():
+        return []
+    return conversation_store.search_conversations(q.strip()[:200], project_id=project_id)
+
+@app.post("/api/conversations")
+async def create_conversation(req: ConversationCreate):
+    if req.project_id and not project_store.get_project(req.project_id):
+        raise HTTPException(status_code=400, detail="Projeto não encontrado.")
+    if req.personality_id and not personality_manager.get_personality(req.personality_id):
+        raise HTTPException(status_code=400, detail="Personalidade não encontrada.")
+    return conversation_store.create_conversation(
+        title=(req.title or "Nova Conversa").strip()[:120] or "Nova Conversa",
+        project_id=req.project_id,
+        personality_id=req.personality_id
+    )
+
+@app.get("/api/conversations/{conv_id}/messages")
+async def get_conversation_messages(conv_id: str):
+    conv = conversation_store.get_conversation(conv_id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversa não encontrada")
+    messages = conversation_store.get_messages(conv_id)
+    return {"conversation": conv, "messages": messages}
+
+@app.put("/api/conversations/{conv_id}")
+async def rename_conversation(conv_id: str, req: ConversationUpdate):
+    title = req.title.strip()[:120]
+    if not title:
+        raise HTTPException(status_code=400, detail="Título vazio.")
+    ok = conversation_store.update_title(conv_id, title)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Conversa não encontrada")
+    return {"status": "success", "title": title}
+
+@app.delete("/api/conversations/{conv_id}")
+async def delete_conversation(conv_id: str):
+    ok = conversation_store.delete_conversation(conv_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Conversa não encontrada")
+    return {"status": "deleted"}
+
+@app.get("/api/conversations/{conv_id}/export")
+async def export_conversation(conv_id: str, format: str = "json"):
+    if format not in ("json", "md", "txt"):
+        raise HTTPException(status_code=400, detail="Formato inválido. Use json, md ou txt.")
+    try:
+        content = conversation_store.export_conversation(conv_id, export_format=format)
+        return {"content": content, "format": format}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+# ----------------- Personalities -----------------
+@app.get("/api/personalities")
+async def get_personalities():
+    return personality_manager.list_personalities()
+
+@app.post("/api/personalities")
+async def create_personality(req: PersonalityCreate):
+    try:
+        return personality_manager.save_personality(
+            personality_id=req.id,
+            name=req.name,
+            description=req.description or "",
+            system_instructions=req.system_instructions,
+            tone=req.tone or "prestativo",
+            formality=req.formality or 3,
+            objectivity=req.objectivity or 4,
+            detail_level=req.detail_level or 3,
+            is_default=req.is_default or False
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.delete("/api/personalities/{p_id}")
+async def delete_personality(p_id: str):
+    ok = personality_manager.delete_personality(p_id)
+    if not ok:
+        raise HTTPException(status_code=400, detail="Não foi possível excluir (perfil padrão ou último perfil).")
+    return {"status": "deleted"}
+
+# ----------------- Memories -----------------
+@app.get("/api/memories")
+async def get_memories(
+    project_id: Optional[str] = None,
+    category: Optional[str] = None,
+    include_global: bool = False,
+):
+    return memory_store.list_memories(
+        project_id=project_id,
+        category=category,
+        only_active=False,
+        include_global=include_global,
+    )
+
+@app.post("/api/memories")
+async def create_memory(req: MemoryCreate):
+    try:
+        return memory_store.add_memory(
+            category=req.category,
+            content=req.content,
+            project_id=req.project_id
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.put("/api/memories/{mem_id}")
+async def update_memory(mem_id: str, req: MemoryUpdate):
+    try:
+        ok = memory_store.update_memory(
+            mem_id, req.content, req.category, is_active=req.is_active
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not ok:
+        raise HTTPException(status_code=404, detail="Memória não encontrada")
+    return {"status": "updated"}
+
+@app.delete("/api/memories/{mem_id}")
+async def delete_memory(mem_id: str):
+    ok = memory_store.delete_memory(mem_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Memória não encontrada")
+    return {"status": "deleted"}
+
+# ----------------- Projects -----------------
+@app.get("/api/projects")
+async def get_projects():
+    return project_store.list_projects()
+
+@app.post("/api/projects")
+async def create_project(req: ProjectCreate):
+    if not req.name.strip():
+        raise HTTPException(status_code=400, detail="Nome do projeto vazio.")
+    return project_store.create_project(
+        name=req.name[:120],
+        description=req.description or "",
+        instructions=req.instructions or ""
+    )
+
+@app.put("/api/projects/{proj_id}")
+async def update_project(proj_id: str, req: ProjectUpdate):
+    ok = project_store.update_project(
+        project_id=proj_id,
+        name=req.name,
+        description=req.description,
+        instructions=req.instructions
+    )
+    if not ok:
+        raise HTTPException(status_code=404, detail="Projeto não encontrado")
+    return {"status": "updated"}
+
+@app.delete("/api/projects/{proj_id}")
+async def delete_project(proj_id: str):
+    ok = project_store.delete_project(proj_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Projeto não encontrado")
+    return {"status": "deleted"}
+
+# ----------------- Documents (RAG) -----------------
+@app.get("/api/documents")
+async def get_documents(project_id: Optional[str] = None):
+    return vector_store.list_documents(project_id)
+
+@app.post("/api/documents/upload")
+async def upload_document(
+    file: UploadFile = File(...),
+    collection: str = Form("Geral"),
+    project_id: Optional[str] = Form(None)
+):
+    original = Path(file.filename or "").name
+    ext = Path(original).suffix.lower()
+    if not original:
+        raise HTTPException(status_code=400, detail="Nome de arquivo ausente.")
+    if ext not in settings.allowed_document_extensions:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Formato não suportado. Use: {', '.join(settings.allowed_document_extensions)}."
+        )
+    if project_id and project_id != "null" and not project_store.get_project(project_id):
+        raise HTTPException(status_code=400, detail="Projeto não encontrado.")
+
+    # Unique safe name: never overwrite an existing document.
+    stem = re.sub(r"[^A-Za-z0-9._-]", "_", Path(original).stem)[:80] or "documento"
+    save_path = DOCS_DIR / f"{stem}-{uuid.uuid4().hex[:8]}{ext}"
+    max_bytes = settings.max_upload_mb * 1024 * 1024
+    written = 0
+
+    try:
+        with open(save_path, "wb") as buffer:
+            while True:
+                chunk = file.file.read(1024 * 1024)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > max_bytes:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"Arquivo maior que o limite de {settings.max_upload_mb} MB."
+                    )
+                buffer.write(chunk)
+    except HTTPException:
+        save_path.unlink(missing_ok=True)
+        raise
+    except Exception as e:
+        save_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail=f"Falha ao salvar arquivo: {e}")
+
+    try:
+        indexed = await vector_store.index_document(
+            file_path=str(save_path),
+            collection=(collection or "Geral")[:60],
+            project_id=project_id if project_id and project_id != "null" else None
+        )
+        return indexed
+    except Exception as e:
+        save_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail=f"Erro ao processar documento: {str(e)}")
+
+@app.delete("/api/documents/{doc_id}")
+async def delete_document(doc_id: str):
+    ok = vector_store.delete_document(doc_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Documento não encontrado")
+    return {"status": "deleted"}
+
+# ----------------- Security & Tools -----------------
+@app.get("/api/security/pending")
+async def get_pending_authorizations():
+    return security_manager.list_pending_actions()
+
+@app.post("/api/security/authorize")
+async def authorize_action(req: AuthorizeActionRequest):
+    status, action = security_manager.resolve_action_detailed(req.action_id, req.approved)
+    if status == "approved" and action:
+        result = await tool_registry.execute_approved_action(action)
+        return {"status": "executed", "result": result}
+
+    if status == "rejected":
+        return {"status": "rejected"}
+    if status in ("not_found", "expired"):
+        raise HTTPException(status_code=404, detail=f"Autorização {status}. Nada foi executado.")
+    if status == "tampered":
+        raise HTTPException(status_code=409, detail="Parâmetros divergentes. Ação bloqueada.")
+    raise HTTPException(status_code=400, detail="Não foi possível resolver a autorização.")
+
+@app.post("/api/tools/execute")
+async def execute_tool(req: ToolExecuteRequest):
+    # Never pass client-supplied "authorized" to the registry.
+    return await tool_registry.execute_tool(
+        name=req.tool_name,
+        params=req.parameters,
+    )
+
+@app.get("/api/tools/list")
+async def list_tools():
+    return [
+        {
+            "name": t.name,
+            "description": t.description,
+            "category": t.category.value,
+            "risk_description": t.risk_description
+        }
+        for t in tool_registry.tools.values()
+    ]
+
+# ----------------- Backup / Restore -----------------
+@app.post("/api/backup")
+async def make_backup(req: Optional[BackupCreate] = None):
+    try:
+        return create_backup(label=(req.label if req else "manual") or "manual")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Falha ao criar backup: {e}")
+
+@app.get("/api/backups")
+async def get_backups():
+    return list_backups()
+
+@app.get("/api/backups/{name}")
+async def download_backup(name: str):
+    try:
+        p = backup_path(name)
+    except (ValueError, FileNotFoundError) as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return FileResponse(str(p), filename=p.name, media_type="application/octet-stream")
+
+@app.post("/api/backup/restore")
+async def restore(req: BackupRestoreRequest):
+    try:
+        result = restore_backup(req.name, confirm=req.confirm)
+        # Pending actions from the previous database state must not survive.
+        security_manager.pending_actions.clear()
+        return result
+    except PermissionError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except (ValueError, FileNotFoundError, RuntimeError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+# ----------------- Mount Static UI -----------------
+UI_DIR = BASE_DIR / "app" / "ui"
+app.mount("/ui", StaticFiles(directory=str(UI_DIR), html=True), name="ui")
+
+@app.get("/")
+async def root():
+    return FileResponse(str(UI_DIR / "index.html"))
+
+@app.get("/favicon.ico")
+async def favicon():
+    return FileResponse(str(UI_DIR / "favicon.svg"), media_type="image/svg+xml")

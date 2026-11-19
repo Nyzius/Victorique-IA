@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Assistente Virtual Pessoal</title>
+  <link rel="icon" href="/ui/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/ui/css/style.css">
+</head>
+<body>
+  <div class="app-layout">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <div class="brand">
+          <div class="brand-icon">⚡</div>
+          <div class="brand-info">
+            <h2>Assistente Local</h2>
+            <span class="status-indicator online" id="statusPill">● Verificando Ollama...</span>
+          </div>
+        </div>
+        <button class="btn btn-primary btn-new-chat" id="btnNewChat">
+          <span>+</span> Nova Conversa
+        </button>
+      </div>
+
+      <!-- Navigation Tabs -->
+      <nav class="nav-tabs">
+        <button class="nav-tab active" data-tab="conversations">💬 Conversas</button>
+        <button class="nav-tab" data-tab="projects">📁 Projetos</button>
+        <button class="nav-tab" data-tab="library">📚 Biblioteca</button>
+        <button class="nav-tab" data-tab="memories">🧠 Memórias</button>
+      </nav>
+
+      <!-- Sidebar Tab Views -->
+      <div class="sidebar-content">
+        <div class="tab-pane active" id="paneConversations">
+          <div class="search-box">
+            <input type="text" id="searchConversations" placeholder="Pesquisar conversas...">
+          </div>
+          <div class="conversations-list" id="conversationsList"></div>
+        </div>
+
+        <div class="tab-pane" id="paneProjects">
+          <div class="pane-header">
+            <h3>Projetos</h3>
+            <button class="btn btn-xs btn-secondary" id="btnCreateProject">+ Novo</button>
+          </div>
+          <div class="projects-list" id="projectsList"></div>
+        </div>
+
+        <div class="tab-pane" id="paneLibrary">
+          <div class="pane-header">
+            <h3>Documentos (RAG)</h3>
+            <button class="btn btn-xs btn-primary" id="btnUploadDoc">+ Importar</button>
+          </div>
+          <div class="documents-list" id="documentsList"></div>
+        </div>
+
+        <div class="tab-pane" id="paneMemories">
+          <div class="pane-header">
+            <h3>Memórias Fixas</h3>
+            <button class="btn btn-xs btn-secondary" id="btnCreateMemory">+ Adicionar</button>
+          </div>
+          <div class="memories-list" id="memoriesList"></div>
+        </div>
+      </div>
+
+      <div class="sidebar-footer">
+        <button class="btn-icon" id="btnOpenSettings" title="Configurações e Personalidade">
+          ⚙️ <span>Configurações</span>
+        </button>
+      </div>
+    </aside>
+
+    <!-- Main Chat Workspace -->
+    <main class="chat-main">
+      <header class="chat-header">
+        <div class="chat-header-info">
+          <h2 id="currentChatTitle">Nova Conversa</h2>
+          <div class="chat-tags">
+            <span class="tag tag-model" id="activeModelTag">—</span>
+            <span class="tag tag-personality" id="activePersonalityTag">Padrão</span>
+            <span class="tag tag-project" id="activeProjectTag" style="display:none;">Sem Projeto</span>
+          </div>
+        </div>
+        <div class="chat-header-actions">
+          <button class="btn btn-sm btn-ghost" id="btnExportChat" title="Exportar conversa">📥 Exportar</button>
+          <button class="btn btn-sm btn-ghost text-danger" id="btnDeleteChat" title="Excluir conversa">🗑️</button>
+        </div>
+      </header>
+
+      <section class="messages-container" id="messagesContainer">
+        <div class="welcome-screen" id="welcomeScreen">
+          <div class="welcome-avatar">⚡</div>
+          <h1>Como posso ajudar hoje?</h1>
+          <p>Assistente local: conversas, memórias e documentos ficam no seu computador. Nenhuma conexão externa acontece sem sua autorização.</p>
+          <div class="quick-cards">
+            <div class="quick-card" data-quick="tools">
+              <strong>🛠️ Ferramentas & Sistema</strong>
+              <span>Conheça as capacidades locais do assistente.</span>
+            </div>
+            <div class="quick-card" data-quick="calc">
+              <strong>🧮 Ações Livres</strong>
+              <span>Teste cálculos matemáticos e consultas seguras.</span>
+            </div>
+            <div class="quick-card" data-quick="library">
+              <strong>📚 Consultar Documentos</strong>
+              <span>Envie um PDF/TXT/MD para pesquisa com citação de página.</span>
+            </div>
+          </div>
+        </div>
+        <div class="messages-list" id="messagesList"></div>
+      </section>
+
+      <footer class="chat-input-area">
+        <div class="auth-bar" id="authBar" style="display: none;">
+          <div class="auth-icon">⚠️</div>
+          <div class="auth-info">
+            <strong id="authTitle">Ação requer autorização</strong>
+            <p id="authDesc">O assistente deseja executar uma operação protegida.</p>
+            <pre class="auth-payload" id="authPayload"></pre>
+          </div>
+          <div class="auth-actions">
+            <button class="btn btn-sm btn-primary" id="btnApproveAction">Autorizar</button>
+            <button class="btn btn-sm btn-secondary" id="btnRejectAction">Recusar</button>
+          </div>
+        </div>
+
+        <form class="chat-input-form" id="chatForm">
+          <textarea
+            id="chatInput"
+            placeholder="Digite sua mensagem... (Shift + Enter para quebra de linha)"
+            rows="1"
+          ></textarea>
+          <div class="input-actions">
+            <button type="button" class="btn-icon" id="btnAttachDoc" title="Indexar documento para consulta">📎</button>
+            <input type="file" id="fileInput" accept=".pdf,.txt,.md" style="display: none;">
+            <button type="submit" class="btn btn-primary btn-send" id="btnSend">Enviar</button>
+            <button type="button" class="btn btn-secondary btn-stop" id="btnStop" style="display: none;">Parar</button>
+          </div>
+        </form>
+      </footer>
+    </main>
+  </div>
+
+  <!-- Settings Modal -->
+  <div class="modal-backdrop" id="settingsModal" style="display: none;">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>Configurações & Personalidade</h3>
+        <button class="btn-close" data-close="settingsModal">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label>Modelo de Linguagem (Ollama local)</label>
+          <select id="settingModel"></select>
+          <small class="hint" id="modelHint"></small>
+        </div>
+        <div class="form-group">
+          <label>Nome do Assistente</label>
+          <input type="text" id="settingName" value="Assistente Pessoal">
+        </div>
+        <div class="form-group">
+          <label>Instruções Gerais de Comportamento</label>
+          <textarea id="settingInstructions" rows="3"></textarea>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Tom de Comunicação</label>
+            <select id="settingTone">
+              <option value="prestativo">Prestativo & Empático</option>
+              <option value="tecnico">Técnico & Preciso</option>
+              <option value="conciso">Direto & Minimalista</option>
+              <option value="didatico">Didático & Educativo</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Privacidade</label>
+            <small class="hint">100% local. Internet só com autorização explícita.</small>
+          </div>
+        </div>
+        <div class="sliders-grid">
+          <div class="slider-group">
+            <label>Formalidade (1 = Informal, 5 = Muito Formal): <span id="valFormality">3</span></label>
+            <input type="range" id="sliderFormality" min="1" max="5" value="3">
+          </div>
+          <div class="slider-group">
+            <label>Objetividade (1 = Conversador, 5 = Direto): <span id="valObjectivity">4</span></label>
+            <input type="range" id="sliderObjectivity" min="1" max="5" value="4">
+          </div>
+          <div class="slider-group">
+            <label>Nível de Detalhe (1 = Conciso, 5 = Exaustivo): <span id="valDetail">3</span></label>
+            <input type="range" id="sliderDetail" min="1" max="5" value="3">
+          </div>
+        </div>
+
+        <div class="settings-section">
+          <h4>Backup do banco de dados</h4>
+          <p class="hint">Cria uma cópia consistente em <code>data/backups</code>. Restaurar substitui os dados atuais e cria um backup de segurança antes.</p>
+          <div class="backup-actions">
+            <button class="btn btn-sm btn-secondary" id="btnCreateBackup">Criar backup agora</button>
+            <span class="hint" id="backupStatus"></span>
+          </div>
+          <div id="backupList" class="backup-list"></div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" data-close="settingsModal">Cancelar</button>
+        <button class="btn btn-primary" id="btnSavePersonality">Salvar Alterações</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Project Modal -->
+  <div class="modal-backdrop" id="projectModal" style="display: none;">
+    <div class="modal">
+      <div class="modal-header">
+        <h3 id="projectModalTitle">Novo Projeto</h3>
+        <button class="btn-close" data-close="projectModal">✕</button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="projectId">
+        <div class="form-group">
+          <label>Nome do projeto</label>
+          <input type="text" id="projectName" maxlength="120" placeholder="Ex.: Finanças pessoais">
+        </div>
+        <div class="form-group">
+          <label>Descrição</label>
+          <textarea id="projectDescription" rows="2" placeholder="Objetivo do projeto"></textarea>
+        </div>
+        <div class="form-group">
+          <label>Instruções do projeto</label>
+          <textarea id="projectInstructions" rows="4" placeholder="Como o assistente deve agir neste projeto"></textarea>
+        </div>
+        <p class="hint">Cada projeto tem conversas, memórias e documentos isolados. Excluir um projeto remove esses dados vinculados.</p>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" data-close="projectModal">Cancelar</button>
+        <button class="btn btn-primary" id="btnSaveProject">Salvar Projeto</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Memory Modal -->
+  <div class="modal-backdrop" id="memoryModal" style="display: none;">
+    <div class="modal">
+      <div class="modal-header">
+        <h3 id="memoryModalTitle">Nova Memória</h3>
+        <button class="btn-close" data-close="memoryModal">✕</button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="memoryId">
+        <div class="form-group">
+          <label>Categoria</label>
+          <select id="memoryCategory">
+            <option value="preference">Preferência</option>
+            <option value="fact">Fato</option>
+            <option value="decision">Decisão</option>
+            <option value="project">Projeto</option>
+            <option value="instruction">Instrução</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Conteúdo (salvo somente com sua ação explícita)</label>
+          <textarea id="memoryContent" rows="4" maxlength="4000" placeholder="Ex.: Prefiro respostas curtas em português."></textarea>
+        </div>
+        <div class="form-group">
+          <label>Escopo</label>
+          <select id="memoryProject">
+            <option value="">Global (todos os projetos)</option>
+          </select>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" data-close="memoryModal">Cancelar</button>
+        <button class="btn btn-primary" id="btnSaveMemory">Salvar Memória</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Library Modal -->
+  <div class="modal-backdrop" id="libraryModal" style="display: none;">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>Biblioteca de Documentos</h3>
+        <button class="btn-close" data-close="libraryModal">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="hint">PDFs digitalizados (imagem) não têm texto extraível e precisam de OCR, não incluído nesta versão. As respostas citam documento e página quando há evidência.</p>
+        <div class="backup-actions">
+          <button class="btn btn-sm btn-primary" id="btnModalUploadDoc">+ Importar PDF/TXT/MD</button>
+        </div>
+        <div id="libraryModalList" class="documents-list"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" data-close="libraryModal">Fechar</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/ui/js/markdown.js"></script>
+  <script src="/ui/js/app.js"></script>
+</body>
+</html>

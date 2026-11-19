@@ -1,0 +1,150 @@
+import sqlite3
+import json
+import logging
+from datetime import datetime
+from pathlib import Path
+from typing import Optional, List, Dict, Any
+
+from app.config import DB_PATH
+
+logger = logging.getLogger("database")
+
+def get_connection() -> sqlite3.Connection:
+    conn = sqlite3.connect(str(DB_PATH), timeout=20.0)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA foreign_keys=ON;")
+    return conn
+
+def init_db():
+    """Initializes database schema and default records."""
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.executescript("""
+    -- System & User Settings
+    CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- Configurable Personalities
+    CREATE TABLE IF NOT EXISTS personalities (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        description TEXT,
+        system_instructions TEXT NOT NULL,
+        tone TEXT DEFAULT 'prestativo',
+        formality INTEGER DEFAULT 3,       -- 1 (informal) to 5 (formal)
+        objectivity INTEGER DEFAULT 4,     -- 1 (conversador) to 5 (direto)
+        detail_level INTEGER DEFAULT 3,    -- 1 (conciso) to 5 (detalhado)
+        is_default INTEGER DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- Independent Projects
+    CREATE TABLE IF NOT EXISTS projects (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        description TEXT,
+        instructions TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- Conversations
+    CREATE TABLE IF NOT EXISTS conversations (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        project_id TEXT,
+        personality_id TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL,
+        FOREIGN KEY (personality_id) REFERENCES personalities(id) ON DELETE SET NULL
+    );
+
+    -- Messages
+    CREATE TABLE IF NOT EXISTS messages (
+        id TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL,
+        role TEXT NOT NULL,                -- 'user', 'assistant', 'system'
+        content TEXT NOT NULL,
+        sources_json TEXT,                 -- Citations/references for RAG & Web
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+    );
+
+    -- Long-term Persistent Memories
+    CREATE TABLE IF NOT EXISTS memories (
+        id TEXT PRIMARY KEY,
+        category TEXT NOT NULL,            -- 'decision', 'preference', 'project', 'fact'
+        content TEXT NOT NULL,
+        project_id TEXT,
+        is_active INTEGER DEFAULT 1,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+    );
+
+    -- Document Library (RAG)
+    CREATE TABLE IF NOT EXISTS documents (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        file_path TEXT NOT NULL,
+        file_type TEXT NOT NULL,           -- 'pdf', 'txt', 'md'
+        total_pages INTEGER DEFAULT 1,
+        total_chunks INTEGER DEFAULT 0,
+        collection TEXT DEFAULT 'Geral',
+        project_id TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+    );
+
+    -- Document Chunks with Vectors
+    CREATE TABLE IF NOT EXISTS document_chunks (
+        id TEXT PRIMARY KEY,
+        document_id TEXT NOT NULL,
+        chunk_index INTEGER NOT NULL,
+        page_number INTEGER DEFAULT 1,
+        content TEXT NOT NULL,
+        embedding_json TEXT NOT NULL,      -- Dense vector representation
+        FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
+    );
+
+    -- Security Audit Trail
+    CREATE TABLE IF NOT EXISTS audit_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        action_type TEXT NOT NULL,         -- 'file_read', 'file_write', 'web_access', 'tool_exec'
+        category TEXT NOT NULL,            -- 'free', 'requires_auth', 'external'
+        resource TEXT NOT NULL,
+        authorized INTEGER NOT NULL,       -- 1 = yes, 0 = blocked/denied
+        details TEXT
+    );
+    """)
+
+    # Populate default personality if none exists
+    cur.execute("SELECT COUNT(*) FROM personalities")
+    if cur.fetchone()[0] == 0:
+        cur.execute("""
+        INSERT INTO personalities (id, name, description, system_instructions, tone, formality, objectivity, detail_level, is_default)
+        VALUES (
+            'default',
+            'Assistente Pessoal',
+            'Assistente inteligente, objetivo e prestativo, otimizado para o seu computador.',
+            'Você é um assistente virtual pessoal independente, inteligente e prestativo. Você roda localmente no computador do usuário. Suas respostas devem ser claras, precisas, bem formatadas e em português. Quando consultar documentos do usuário, cite sempre o nome do documento e a página. Nunca invente dados.',
+            'prestativo',
+            3,
+            4,
+            3,
+            1
+        )
+        """)
+
+    conn.commit()
+    conn.close()
+    logger.info("Database initialized successfully.")
+
+if __name__ == "__main__":
+    init_db()
