@@ -54,6 +54,25 @@ class Settings(BaseModel):
     allowed_document_extensions: list[str] = [".pdf", ".txt", ".md"]
     authorization_ttl_seconds: int = 120
 
+    # Tool calling: the model may request tools; only FREE tools run
+    # automatically. Protected/external tools always require user approval.
+    tool_calling_enabled: bool = os.environ.get(
+        "ASSISTANT_TOOL_CALLING", "1"
+    ).lower() not in ("0", "false", "no")
+    max_tool_rounds: int = _env_int("ASSISTANT_MAX_TOOL_ROUNDS", 3)
+    max_tool_calls_per_round: int = _env_int("ASSISTANT_MAX_TOOL_CALLS", 3)
+    tool_result_max_chars: int = _env_int("ASSISTANT_TOOL_RESULT_CHARS", 4000)
+
+    # OCR for PDFs without an embedded text layer. Uses Tesseract; if it is
+    # not installed the app keeps working and reports the limitation.
+    ocr_enabled: bool = os.environ.get(
+        "ASSISTANT_OCR", "1"
+    ).lower() not in ("0", "false", "no")
+    ocr_lang: str = os.environ.get("ASSISTANT_OCR_LANG", "")
+    ocr_dpi: int = _env_int("ASSISTANT_OCR_DPI", 200)
+    ocr_min_chars: int = _env_int("ASSISTANT_OCR_MIN_CHARS", 40)
+    tesseract_cmd: str = os.environ.get("TESSERACT_CMD", "")
+
     # Local origins allowed to call the API from a browser.
     allowed_origins: list[str] = [
         "http://127.0.0.1:8765",

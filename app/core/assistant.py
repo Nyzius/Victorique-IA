@@ -1,16 +1,135 @@
 import asyncio
 import json
 import logging
-from typing import AsyncGenerator, Dict, Any, Optional
+from typing import AsyncGenerator, Dict, Any, Optional, List
 
 from app.memory.conversation_store import conversation_store
 from app.core.context_builder import context_builder
 from app.models.ollama_client import ollama_client
+from app.tools.registry import tool_registry
 from app.config import settings
 
 logger = logging.getLogger("assistant")
 
 CANCELLED_MARKER = "\n\n_[Geração interrompida pelo usuário.]_"
+NO_TEXT_FALLBACK = "_(O modelo não retornou texto nesta resposta.)_"
+
+
+def _event(payload: Dict[str, Any]) -> str:
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+def _truncate(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return text[:limit] + f"\n...[truncado; {len(text)} caracteres no total]"
+
+
+def _tools_unsupported(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return "support tools" in message or "does not support tool" in message
+
+
+def _unwrap_code_fence(text: str) -> str:
+    """
+    Models sometimes wrap ordinary prose in a ``` block (with the text either
+    on its own line or right after the backticks). That renders as a code
+    block, so the fence is removed. Non-fenced text is returned unchanged.
+    """
+    raw = (text or "").strip()
+    if not raw.startswith("```"):
+        return text
+    body = raw[3:]
+    if body.startswith("\n"):
+        inner = body[1:]
+    else:
+        first_line, _, rest = body.partition("\n")
+        # "```json\n..." / "```python\n..." — a short single token is a
+        # language tag, not content.
+        if first_line and " " not in first_line and len(first_line) <= 15 \
+                and all(c.isalnum() or c in "_+-" for c in first_line):
+            inner = rest
+        else:
+            inner = body
+    inner = inner.rstrip()
+    if inner.endswith("```"):
+        inner = inner[:-3]
+    inner = inner.strip()
+    return inner if inner else text
+
+
+def _fenced_prose_ready(text: str) -> bool:
+    """
+    True once a fenced block is clearly prose (its body does not start with a
+    JSON object), so it can be shown instead of being buffered indefinitely.
+    """
+    stripped = (text or "").lstrip()
+    if not stripped.startswith("```"):
+        return False
+    lines = stripped.splitlines()
+    if len(lines) < 2:
+        return False
+    body = "\n".join(lines[1:]).lstrip()
+    if not body:
+        return False
+    if body.startswith("{"):
+        return False
+    return len(body) >= 64 or stripped.rstrip().endswith("```")
+
+
+def _parse_text_tool_call(text: str) -> Optional[Dict[str, Any]]:
+    """
+    Some local models (notably qwen2.5-coder) answer a tool request with a raw
+    JSON object instead of using Ollama's native tool_calls field. This parser
+    accepts only a pure JSON object naming a registered tool.
+    """
+    raw = (text or "").strip()
+    if raw.startswith("```"):
+        lines = raw.splitlines()
+        if lines:
+            raw = "\n".join(lines[1:])
+        raw = raw.strip()
+        if raw.endswith("```"):
+            raw = raw[:-3].strip()
+    if not (raw.startswith("{") and raw.endswith("}")):
+        return None
+    try:
+        obj = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(obj, dict):
+        return None
+
+    function = obj.get("function") if isinstance(obj.get("function"), dict) else {}
+    name = obj.get("name") or obj.get("tool") or function.get("name")
+    arguments = (
+        obj.get("arguments")
+        if obj.get("arguments") is not None
+        else obj.get("parameters")
+    )
+    if arguments is None:
+        arguments = function.get("arguments")
+
+    if not isinstance(name, str) or name not in tool_registry.tools:
+        return None
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except json.JSONDecodeError:
+            return None
+    if arguments is None:
+        arguments = {}
+    if not isinstance(arguments, dict):
+        return None
+
+    allowed_keys = {"name", "arguments", "tool", "parameters", "function", "type", "id"}
+    if not set(obj.keys()).issubset(allowed_keys):
+        return None
+    if obj.get("type") not in (None, "function"):
+        return None
+    if obj.get("id") is not None and not isinstance(obj.get("id"), str):
+        return None
+    return {"function": {"name": name, "arguments": arguments}}
 
 
 class AssistantEngine:
@@ -31,6 +150,80 @@ class AssistantEngine:
             logger.error(f"Failed to save assistant message: {e}")
             return None
 
+    async def _stream_model_round(
+        self,
+        state: Dict[str, Any],
+        **chat_kwargs: Any,
+    ) -> AsyncGenerator[str, None]:
+        """
+        Streams one model round. While the output looks like a raw JSON tool
+        call, tokens are buffered instead of being shown to the user. If the
+        buffer turns out to be ordinary text, it is flushed unchanged.
+        """
+        async for token in ollama_client.chat_stream(
+            tool_calls_out=state["calls"],
+            **chat_kwargs,
+        ):
+            if not state["buffering"]:
+                if state.get("strip_fence"):
+                    if "```" in token:
+                        token = token.replace("```", "")
+                        state["strip_fence"] = False
+                    if not token:
+                        continue
+                state["text"].append(token)
+                yield token
+                continue
+
+            state["prefix"] += token
+            stripped = state["prefix"].lstrip()
+            looks_like_json = stripped.startswith("{") or stripped.startswith("```")
+
+            if not looks_like_json:
+                # Backticks can arrive one at a time ("`", "``", "```"). While
+                # the buffer could still become a code fence, keep waiting.
+                if stripped and len(stripped) < 3 and "```".startswith(stripped):
+                    continue
+                state["buffering"] = False
+                chunk = state["prefix"]
+                state["prefix"] = ""
+                state["text"].append(chunk)
+                yield chunk
+                continue
+
+            parsed = _parse_text_tool_call(state["prefix"])
+            if parsed:
+                state["buffering"] = False
+                state["prefix"] = ""
+                state["calls"].append(parsed)
+            elif _fenced_prose_ready(state["prefix"]):
+                # A fenced block that is prose, not a tool call: show it now
+                # without the fence instead of withholding the whole answer.
+                state["buffering"] = False
+                state["strip_fence"] = not state["prefix"].rstrip().endswith("```")
+                chunk = _unwrap_code_fence(state["prefix"])
+                state["prefix"] = ""
+                state["text"].append(chunk)
+                yield chunk
+            elif len(state["prefix"]) > 4000:
+                # Not a tool call; avoid withholding a long normal answer.
+                state["buffering"] = False
+                chunk = _unwrap_code_fence(state["prefix"])
+                state["prefix"] = ""
+                state["text"].append(chunk)
+                yield chunk
+
+        if state["buffering"] and state["prefix"]:
+            parsed = _parse_text_tool_call(state["prefix"])
+            state["buffering"] = False
+            if parsed:
+                state["calls"].append(parsed)
+            else:
+                chunk = _unwrap_code_fence(state["prefix"])
+                state["prefix"] = ""
+                state["text"].append(chunk)
+                yield chunk
+
     async def chat_stream(
         self,
         conversation_id: str,
@@ -45,8 +238,16 @@ class AssistantEngine:
         - {"type": "meta", "conversation_id": "...", "model": "..."}
         - {"type": "sources", "data": [...]}
         - {"type": "token", "content": "..."}
+        - {"type": "tool_call", "tool": "...", "arguments": {...}}
+        - {"type": "tool_result", "tool": "...", "status": "...", "result": {...}}
+        - {"type": "authorization_required", "action_id": "...", ...}
+        - {"type": "notice", "message": "..."}
         - {"type": "error", "message": "..."} (also emitted as token for compatibility)
         - {"type": "done", "conversation_id": "...", "message_id": "...", "content": "..."}
+
+        Tool calling: FREE tools run automatically. Protected/external tools
+        create a server-side pending authorization and the turn stops; nothing
+        protected runs before the user approves it.
 
         If the client disconnects, the underlying Ollama stream is closed and
         the partial answer is persisted with an explicit cancellation marker.
@@ -59,13 +260,19 @@ class AssistantEngine:
         )
 
         selected_model = model or settings.default_model
-        full_response_parts: list[str] = []
+        full_response_parts: List[str] = []
         sources: list = []
         saved_id: Optional[str] = None
         finished = False
+        tool_calls_count = 0
+        pending_action_id: Optional[str] = None
 
         try:
-            yield f"data: {json.dumps({'type': 'meta', 'conversation_id': conversation_id, 'model': selected_model}, ensure_ascii=False)}\n\n"
+            yield _event({
+                "type": "meta",
+                "conversation_id": conversation_id,
+                "model": selected_model,
+            })
 
             history = conversation_store.get_messages(conversation_id)
 
@@ -79,32 +286,172 @@ class AssistantEngine:
 
             sources = ctx["sources"]
             if sources:
-                yield f"data: {json.dumps({'type': 'sources', 'data': sources}, ensure_ascii=False)}\n\n"
+                yield _event({"type": "sources", "data": sources})
 
-            try:
-                async for token in ollama_client.chat_stream(
-                    messages=ctx["messages"],
-                    model=selected_model,
-                    system_prompt=ctx["system_prompt"],
-                    max_tokens=settings.max_output_tokens,
-                ):
-                    full_response_parts.append(token)
-                    yield f"data: {json.dumps({'type': 'token', 'content': token}, ensure_ascii=False)}\n\n"
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                logger.error(f"Chat stream generation error: {e}")
-                err_msg = f"\n[Erro ao processar resposta do modelo local: {str(e)}]"
-                full_response_parts.append(err_msg)
-                yield f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
-                yield f"data: {json.dumps({'type': 'token', 'content': err_msg}, ensure_ascii=False)}\n\n"
+            working_messages: List[Dict[str, Any]] = list(ctx["messages"])
+            tools_enabled = bool(settings.tool_calling_enabled)
+            tool_schemas = tool_registry.get_ollama_tools() if tools_enabled else None
+            seen_calls: set = set()
+            max_rounds = max(0, int(settings.max_tool_rounds))
+            max_calls = max(1, int(settings.max_tool_calls_per_round))
+
+            for round_index in range(max_rounds + 1):
+                state: Dict[str, Any] = {
+                    "buffering": bool(tools_enabled),
+                    "prefix": "",
+                    "text": [],
+                    "calls": [],
+                    "strip_fence": False,
+                }
+
+                try:
+                    async for token in self._stream_model_round(
+                        state,
+                        messages=working_messages,
+                        model=selected_model,
+                        system_prompt=ctx["system_prompt"],
+                        max_tokens=settings.max_output_tokens,
+                        tools=tool_schemas if tools_enabled else None,
+                    ):
+                        full_response_parts.append(token)
+                        yield _event({"type": "token", "content": token})
+                except RuntimeError as exc:
+                    # Some local models do not support the tools API. Fall back
+                    # to plain chat instead of failing the whole turn.
+                    if tools_enabled and _tools_unsupported(exc):
+                        tools_enabled = False
+                        tool_schemas = None
+                        notice = (
+                            "O modelo selecionado não suporta tool calling nesta "
+                            "versão do Ollama. A resposta continuará sem execução "
+                            "automática de ferramentas."
+                        )
+                        yield _event({"type": "notice", "message": notice})
+                        state = {
+                            "buffering": False,
+                            "prefix": "",
+                            "text": [],
+                            "calls": [],
+                            "strip_fence": False,
+                        }
+                        async for token in self._stream_model_round(
+                            state,
+                            messages=working_messages,
+                            model=selected_model,
+                            system_prompt=ctx["system_prompt"],
+                            max_tokens=settings.max_output_tokens,
+                            tools=None,
+                        ):
+                            full_response_parts.append(token)
+                            yield _event({"type": "token", "content": token})
+                    else:
+                        raise
+
+                tool_calls = state["calls"]
+                if not tool_calls:
+                    break
+
+                if round_index >= max_rounds:
+                    note = (
+                        "\n\n_[Limite de rodadas de ferramentas atingido. "
+                        "Pergunte novamente se precisar de mais uma ação.]_"
+                    )
+                    full_response_parts.append(note)
+                    yield _event({"type": "notice", "message": note.strip("_ \n")})
+                    break
+
+                selected_calls = tool_calls[:max_calls]
+                working_messages.append({
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": selected_calls,
+                })
+
+                stop_after_authorization = False
+                for call in selected_calls:
+                    function = call.get("function") or {}
+                    name = str(function.get("name") or "")
+                    arguments = function.get("arguments") or {}
+                    if not isinstance(arguments, dict):
+                        arguments = {}
+
+                    yield _event({
+                        "type": "tool_call",
+                        "tool": name,
+                        "arguments": arguments,
+                    })
+
+                    call_key = (
+                        name,
+                        json.dumps(arguments, sort_keys=True, ensure_ascii=False),
+                    )
+                    if call_key in seen_calls:
+                        result = {
+                            "status": "error",
+                            "error": "Chamada repetida idêntica ignorada para evitar loop.",
+                        }
+                    else:
+                        seen_calls.add(call_key)
+                        tool_calls_count += 1
+                        result = await tool_registry.execute_tool(
+                            name=name,
+                            params=arguments,
+                            context={"conversation_id": conversation_id},
+                        )
+
+                    if result.get("status") == "requires_authorization":
+                        pending_action_id = result.get("action_id")
+                        note = (
+                            f"\n\nPreciso da sua autorização para executar "
+                            f"`{name}` em `{result.get('resource', '')}`. "
+                            "Nada foi executado ainda. Use a barra de autorização "
+                            "para aprovar ou recusar."
+                        )
+                        full_response_parts.append(note)
+                        yield _event({"type": "token", "content": note})
+                        yield _event({
+                            "type": "authorization_required",
+                            **result,
+                        })
+                        stop_after_authorization = True
+                        break
+
+                    result_text = json.dumps(result, ensure_ascii=False, default=str)
+                    yield _event({
+                        "type": "tool_result",
+                        "tool": name,
+                        "status": result.get("status", "unknown"),
+                        "result": result,
+                    })
+                    working_messages.append({
+                        "role": "tool",
+                        "tool_name": name,
+                        "content": _truncate(
+                            result_text,
+                            max(500, int(settings.tool_result_max_chars)),
+                        ),
+                    })
+
+                if stop_after_authorization:
+                    break
 
             full_content = "".join(full_response_parts)
+            if not full_content.strip():
+                full_content = NO_TEXT_FALLBACK
             saved = self._save_assistant_message(conversation_id, full_content, sources)
             saved_id = saved["id"] if saved else None
             finished = True
 
-            yield f"data: {json.dumps({'type': 'done', 'conversation_id': conversation_id, 'message_id': saved_id, 'content': full_content}, ensure_ascii=False)}\n\n"
+            done_payload: Dict[str, Any] = {
+                "type": "done",
+                "conversation_id": conversation_id,
+                "message_id": saved_id,
+                "content": full_content,
+                "tool_calls": tool_calls_count,
+            }
+            if pending_action_id:
+                done_payload["pending_action_id"] = pending_action_id
+            yield _event(done_payload)
 
         except (GeneratorExit, asyncio.CancelledError):
             # Client disconnected / generation aborted. Persist partial content.
@@ -117,10 +464,6 @@ class AssistantEngine:
                 )
             logger.info(f"Generation cancelled for conversation {conversation_id}")
             raise
-        finally:
-            # Defensive: if the generator is closed before the done event but no
-            # partial content exists, nothing is persisted (user message remains).
-            pass
 
 
 assistant_engine = AssistantEngine()

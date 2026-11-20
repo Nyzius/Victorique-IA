@@ -110,6 +110,9 @@ def test_ui_is_offline_and_handlers_exist():
         "$('btnStop').addEventListener",
         "AbortController",
         "conversation_id",
+        "authorization_required",
+        "tool_result",
+        "appendToolEvent",
     ]:
         assert snippet in js, f"handler ausente: {snippet}"
 

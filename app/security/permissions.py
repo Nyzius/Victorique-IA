@@ -72,7 +72,8 @@ class SecurityManager:
         category: ActionCategory,
         resource: str,
         description: str,
-        payload: Dict[str, Any]
+        payload: Dict[str, Any],
+        context: Optional[Dict[str, Any]] = None,
     ) -> str:
         """
         Registers an action that requires user consent.
@@ -89,6 +90,9 @@ class SecurityManager:
             "resource": resource,
             "description": description,
             "payload": dict(payload or {}),
+            # Internal context (e.g. conversation_id) is never exposed to the
+            # client and is not part of the approval hash.
+            "context": dict(context or {}),
             "payload_hash": _payload_hash(payload or {}),
             "timestamp": datetime.now().isoformat(timespec="seconds"),
             "expires_at": now + ttl,

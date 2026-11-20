@@ -59,17 +59,23 @@ class OllamaClient:
 
     async def chat_stream(
         self,
-        messages: List[Dict[str, str]],
+        messages: List[Dict[str, Any]],
         model: Optional[str] = None,
         system_prompt: Optional[str] = None,
         temperature: Optional[float] = None,
         num_ctx: Optional[int] = None,
-        max_tokens: Optional[int] = None
+        max_tokens: Optional[int] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        tool_calls_out: Optional[List[Dict[str, Any]]] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Sends a conversation to Ollama and streams the response tokens in real-time.
         Closing this generator closes the HTTP connection, which makes Ollama stop
         generating (best-effort cancellation supported by the local API).
+
+        When `tools` is provided, any tool calls requested by the model are
+        appended to `tool_calls_out` (normalized) and are NOT executed here.
+        The caller is responsible for validating and running them.
         """
         model = model or settings.default_model
         temperature = temperature if temperature is not None else settings.temperature
@@ -92,6 +98,8 @@ class OllamaClient:
             "stream": True,
             "options": options,
         }
+        if tools:
+            payload["tools"] = tools
 
         url = f"{self.base_url}/api/chat"
         async with httpx.AsyncClient(timeout=httpx.Timeout(600.0, connect=15.0)) as client:
@@ -104,12 +112,40 @@ class OllamaClient:
                     if line.strip():
                         try:
                             data = json.loads(line)
+                            if not isinstance(data, dict):
+                                continue
                             if data.get("error"):
                                 raise RuntimeError(str(data["error"]))
-                            msg = data.get("message", {})
+                            msg = data.get("message") or {}
+                            if not isinstance(msg, dict):
+                                continue
                             content = msg.get("content", "")
                             if content:
                                 yield content
+
+                            for raw_call in msg.get("tool_calls") or []:
+                                if not isinstance(raw_call, dict):
+                                    continue
+                                function = raw_call.get("function") or {}
+                                name = function.get("name")
+                                if not name:
+                                    continue
+                                arguments = function.get("arguments")
+                                if isinstance(arguments, str):
+                                    try:
+                                        arguments = json.loads(arguments)
+                                    except json.JSONDecodeError:
+                                        arguments = {"_raw": arguments}
+                                if not isinstance(arguments, dict):
+                                    arguments = {}
+                                if tool_calls_out is not None:
+                                    tool_calls_out.append({
+                                        "function": {
+                                            "name": name,
+                                            "arguments": arguments,
+                                        }
+                                    })
+
                             if data.get("done", False):
                                 break
                         except json.JSONDecodeError:

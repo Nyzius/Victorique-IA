@@ -15,6 +15,10 @@ os.environ.setdefault("ASSISTANT_MODEL", os.environ.get("ASSISTANT_MODEL", "qwen
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
+from app.memory.database import init_db  # noqa: E402
+
+init_db()
+
 
 @pytest.fixture(scope="session")
 def test_data_dir() -> Path:

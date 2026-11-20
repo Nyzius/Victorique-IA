@@ -820,3 +820,28 @@ body, html {
 .message-bubble pre code { padding: 0; background: transparent; }
 .message-bubble a { color: var(--accent); }
 .message-bubble hr { border: none; border-top: 1px solid var(--border-color); margin: 10px 0; }
+
+/* ------------------- Tool calling events (added) ------------------- */
+.tool-events {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.tool-event {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-left: 3px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 4px 8px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.tool-event-ok { border-left-color: var(--success); }
+.tool-event-error { border-left-color: var(--danger); }
+.tool-event-auth { border-left-color: var(--warning); color: var(--text-main); }
+.tool-event-notice { border-left-color: var(--accent); }

@@ -186,6 +186,18 @@ async function checkHealth() {
       pill.textContent = '○ Ollama Desconectado';
       pill.className = 'status-indicator text-danger';
     }
+
+    const runtime = $('runtimeInfo');
+    if (runtime) {
+      const ocr = data.ocr || {};
+      const ocrText = ocr.available
+        ? `OCR ativo (${(ocr.languages || []).join(', ') || 'eng'})`
+        : 'OCR indisponível';
+      runtime.textContent =
+        `Ferramentas: ${data.tools_count || 0}` +
+        `${data.tool_calling_enabled ? ' · tool calling ativo' : ' · tool calling desativado'}` +
+        ` · ${ocrText}`;
+    }
   } catch (err) {
     console.error('Healthcheck failed', err);
     $('statusPill').textContent = '○ Backend indisponível';
@@ -337,6 +349,9 @@ async function sendMessage() {
   renderMessage('user', text);
   const assistantMsgEl = renderMessage('assistant', '');
   const bubble = assistantMsgEl.querySelector('.message-bubble');
+  const toolBox = document.createElement('div');
+  toolBox.className = 'tool-events';
+  assistantMsgEl.appendChild(toolBox);
   const citationsContainer = document.createElement('div');
   citationsContainer.className = 'citations-box';
   assistantMsgEl.appendChild(citationsContainer);
@@ -400,6 +415,39 @@ async function sendMessage() {
           if (data.model) { selectedModel = data.model; updateModelTag(); }
         } else if (data.type === 'sources') {
           renderCitations(citationsContainer, data.data || []);
+        } else if (data.type === 'tool_call') {
+          const args = JSON.stringify(data.arguments || {});
+          appendToolEvent(
+            toolBox,
+            `🔧 Executando ${data.tool} ${args.length > 160 ? args.slice(0, 160) + '…' : args}`,
+            'tool-event-running'
+          );
+        } else if (data.type === 'tool_result') {
+          let detail = '';
+          const payload = data.result && data.result.result;
+          if (payload !== undefined) {
+            try {
+              detail = JSON.stringify(payload);
+            } catch (_) {
+              detail = String(payload);
+            }
+            if (detail.length > 300) detail = detail.slice(0, 300) + '…';
+          }
+          const ok = data.status === 'success';
+          appendToolEvent(
+            toolBox,
+            `${ok ? '✅' : '⚠️'} ${data.tool} (${data.status})${detail ? ' — ' + detail : ''}`,
+            ok ? 'tool-event-ok' : 'tool-event-error'
+          );
+        } else if (data.type === 'authorization_required') {
+          appendToolEvent(
+            toolBox,
+            `🔐 Autorização necessária: ${data.tool_name || data.tool || 'ação'} — ${data.resource || ''}`,
+            'tool-event-auth'
+          );
+          checkPendingAuthorizations();
+        } else if (data.type === 'notice') {
+          appendToolEvent(toolBox, `ℹ️ ${data.message}`, 'tool-event-notice');
         } else if (data.type === 'token') {
           accumulated += data.content || '';
           bubble.innerHTML = md(accumulated);
@@ -468,6 +516,15 @@ function renderMessage(role, content, sources = null) {
   messagesList.appendChild(msg);
   scrollToBottom();
   return msg;
+}
+
+function appendToolEvent(container, text, className) {
+  if (!container) return;
+  const line = document.createElement('div');
+  line.className = `tool-event ${className || ''}`.trim();
+  line.textContent = text;
+  container.appendChild(line);
+  scrollToBottom();
 }
 
 function renderCitations(container, sources) {

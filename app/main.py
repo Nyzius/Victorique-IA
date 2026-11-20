@@ -1,3 +1,4 @@
+import json
 import re
 import uuid
 from pathlib import Path
@@ -18,6 +19,7 @@ from app.core.assistant import assistant_engine
 from app.core.backup import create_backup, list_backups, backup_path, restore_backup
 from app.models.ollama_client import ollama_client
 from app.rag.vector_store import vector_store
+from app.rag.document_loader import document_loader
 from app.security.permissions import security_manager
 from app.tools.registry import tool_registry
 
@@ -186,6 +188,9 @@ async def health_check():
         "models_count": len(models),
         "default_model": active,
         "default_model_installed": active in names if ollama_ok else None,
+        "tool_calling_enabled": settings.tool_calling_enabled,
+        "tools_count": len(tool_registry.tools),
+        "ocr": document_loader.ocr.status(),
     }
 
 @app.get("/api/models")
@@ -484,6 +489,7 @@ async def upload_document(
             collection=(collection or "Geral")[:60],
             project_id=project_id if project_id and project_id != "null" else None
         )
+        indexed["ocr"] = dict(document_loader.last_ocr or {})
         return indexed
     except Exception as e:
         save_path.unlink(missing_ok=True)
@@ -506,7 +512,29 @@ async def authorize_action(req: AuthorizeActionRequest):
     status, action = security_manager.resolve_action_detailed(req.action_id, req.approved)
     if status == "approved" and action:
         result = await tool_registry.execute_approved_action(action)
-        return {"status": "executed", "result": result}
+
+        # If the action came from a conversation, persist a compact result so
+        # the next model turn can see what happened without inventing details.
+        conversation_id = (action.get("context") or {}).get("conversation_id")
+        if conversation_id and conversation_store.get_conversation(conversation_id):
+            tool_name = action.get("action_type", "ferramenta")
+            summary = json.dumps(result, ensure_ascii=False, default=str)
+            if len(summary) > settings.tool_result_max_chars:
+                summary = summary[: settings.tool_result_max_chars] + "...[truncado]"
+            conversation_store.add_message(
+                conversation_id=conversation_id,
+                role="assistant",
+                content=(
+                    f"_[Ferramenta `{tool_name}` aprovada e executada pelo usuário]_\n"
+                    f"Resultado: {summary}"
+                ),
+            )
+
+        return {
+            "status": "executed",
+            "result": result,
+            "conversation_id": conversation_id,
+        }
 
     if status == "rejected":
         return {"status": "rejected"}
@@ -531,7 +559,8 @@ async def list_tools():
             "name": t.name,
             "description": t.description,
             "category": t.category.value,
-            "risk_description": t.risk_description
+            "risk_description": t.risk_description,
+            "parameters": t.parameters,
         }
         for t in tool_registry.tools.values()
     ]
