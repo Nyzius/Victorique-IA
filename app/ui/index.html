@@ -138,6 +138,11 @@
             <input type="file" id="fileInput" accept=".pdf,.txt,.md" style="display: none;">
             <button type="submit" class="btn btn-primary btn-send" id="btnSend">Enviar</button>
             <button type="button" class="btn btn-secondary btn-stop" id="btnStop" style="display: none;">Parar</button>
+            <div class="voice-controls">
+              <span class="voice-status" id="voiceStatus">Voz: iniciando…</span>
+              <button type="button" class="btn btn-voice btn-voice-listen" id="btnVoiceListen" title="Ouvir microfone (STT)">🎤 Ouvir</button>
+              <button type="button" class="btn btn-voice btn-voice-speak" id="btnVoiceSpeak" title="Falar última resposta (TTS)">🔊 Falar</button>
+            </div>
           </div>
         </form>
       </footer>

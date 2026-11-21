@@ -787,6 +787,57 @@ body, html {
   word-break: break-word;
 }
 
+/* ------------------- Voz (TTS/STT) ------------------- */
+.voice-controls {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
+  padding: 6px 10px;
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+}
+
+.voice-status {
+  font-size: 11px;
+  font-family: monospace;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border-color);
+}
+
+.voice-status.on { color: var(--success); }
+.voice-status.off { color: var(--text-muted); }
+.voice-status.listening { color: var(--accent); animation: pulse 1.5s infinite; }
+.voice-status.speaking { color: var(--warning); animation: pulse 1.5s infinite; }
+.voice-status.error { color: var(--danger); }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+.btn-voice {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  font-size: 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-color);
+  background-color: var(--bg-secondary);
+  color: var(--text-main);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn-voice:hover { background-color: var(--bg-hover); }
+.btn-voice:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-voice.listening { border-color: var(--accent); color: var(--accent); }
+.btn-voice.speaking { border-color: var(--warning); color: var(--warning); }
+
 .message-bubble h1, .message-bubble h2, .message-bubble h3,
 .message-bubble h4, .message-bubble h5, .message-bubble h6 {
   margin: 12px 0 6px;

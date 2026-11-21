@@ -7,6 +7,9 @@ let activeAbortController = null;
 let isGenerating = false;
 let projectsCache = [];
 let authPollTimer = null;
+let voiceEnabled = false;
+let sttAvailable = false;
+let ttsAvailable = false;
 
 const $ = (id) => document.getElementById(id);
 const escape = (t) => (window.escapeHtml ? window.escapeHtml(t) : String(t || ''));
@@ -17,6 +20,9 @@ const chatInput = $('chatInput');
 const chatForm = $('chatForm');
 const btnSend = $('btnSend');
 const btnStop = $('btnStop');
+const btnVoiceListen = $('btnVoiceListen');
+const btnVoiceSpeak = $('btnVoiceSpeak');
+const voiceStatus = $('voiceStatus');
 const messagesList = $('messagesList');
 const welcomeScreen = $('welcomeScreen');
 const conversationsList = $('conversationsList');
@@ -42,6 +48,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   await loadPersonalitySettings();
   startNewChat();
   checkPendingAuthorizations();
+  await initVoice();
   authPollTimer = setInterval(checkPendingAuthorizations, 5000);
 });
 
@@ -119,6 +126,14 @@ function setupEventListeners() {
       });
     }
   });
+
+  // Controles de voz
+  if (btnVoiceListen) {
+    btnVoiceListen.addEventListener('click', toggleVoiceListen);
+  }
+  if (btnVoiceSpeak) {
+    btnVoiceSpeak.addEventListener('click', toggleVoiceSpeak);
+  }
 
   document.querySelectorAll('.quick-card').forEach(card => {
     card.addEventListener('click', () => {
@@ -202,6 +217,106 @@ async function checkHealth() {
     console.error('Healthcheck failed', err);
     $('statusPill').textContent = '○ Backend indisponível';
     $('statusPill').className = 'status-indicator text-danger';
+  }
+}
+
+async function initVoice() {
+  try {
+    const [tts, stt] = await Promise.all([
+      api('/api/tts/status'),
+      api('/api/stt/status'),
+    ]);
+    ttsAvailable = tts.available === true;
+    sttAvailable = stt.available === true;
+    voiceEnabled = ttsAvailable || sttAvailable;
+
+    const ttsBtn = $('btnVoiceSpeak');
+    const sttBtn = $('btnVoiceListen');
+    const vs = $('voiceStatus');
+
+    if (ttsBtn) {
+      ttsBtn.disabled = !ttsAvailable;
+      ttsBtn.title = ttsAvailable ? 'Falar última resposta' : 'TTS indisponível';
+    }
+    if (sttBtn) {
+      sttBtn.disabled = !sttAvailable || !stt.microphone_available;
+      sttBtn.title = sttAvailable && stt.microphone_available
+        ? 'Ouvir microfone'
+        : 'STT/microfone indisponível';
+    }
+    if (vs) {
+      vs.textContent = `Voz: TTS ${ttsAvailable ? '●' : '○'} | STT ${sttAvailable ? '●' : '○'}`;
+      vs.className = voiceEnabled ? 'voice-status on' : 'voice-status off';
+    }
+  } catch (err) {
+    console.error('Voice init failed', err);
+  }
+}
+
+function updateVoiceStatus(text, kind = 'info') {
+  const vs = $('voiceStatus');
+  if (vs) {
+    vs.textContent = text;
+    vs.className = `voice-status ${kind}`;
+  }
+}
+
+async function toggleVoiceListen() {
+  if (!sttAvailable) {
+    updateVoiceStatus('STT não disponível.', 'error');
+    return;
+  }
+  try {
+    updateVoiceStatus('Ouvindo... fale agora.', 'listening');
+    const data = await api('/api/stt/listen', {
+      method: 'POST',
+      body: JSON.stringify({ timeout: 5, phrase_time_limit: 15 }),
+    });
+    if (data.status === 'ok' && data.text) {
+      updateVoiceStatus('Reconhecido: ' + data.text.slice(0, 60) + '…', 'ok');
+      chatInput.value = data.text;
+      chatInput.style.height = 'auto';
+      chatInput.style.height = Math.min(chatInput.scrollHeight, 180) + 'px';
+      chatInput.focus();
+    } else {
+      updateVoiceStatus('Nenhuma fala detectada.', 'warn');
+    }
+  } catch (err) {
+    console.error('STT error', err);
+    updateVoiceStatus('Erro no STT.', 'error');
+  } finally {
+    if (voiceEnabled) updateVoiceStatus('Voz: ativa', 'info');
+  }
+}
+
+async function toggleVoiceSpeak() {
+  if (!ttsAvailable) {
+    updateVoiceStatus('TTS não disponível.', 'error');
+    return;
+  }
+  // Fala a última mensagem do assistente na conversa atual.
+  const lastBubble = messagesList.querySelector('.message-bubble.bot:last-child');
+  if (!lastBubble) {
+    updateVoiceStatus('Nenhuma resposta para falar.', 'warn');
+    return;
+  }
+  const text = lastBubble.textContent || '';
+  try {
+    updateVoiceStatus('Falando…', 'speaking');
+    const data = await api('/api/tts/speak', {
+      method: 'POST',
+      body: JSON.stringify({ text, async_: true }),
+    });
+    if (data.status === 'speaking_async') {
+      updateVoiceStatus('Falando resposta.', 'ok');
+    } else {
+      updateVoiceStatus('TTS indisponível.', 'error');
+    }
+  } catch (err) {
+    console.error('TTS error', err);
+    updateVoiceStatus('Erro no TTS.', 'error');
+  } finally {
+    if (voiceEnabled) updateVoiceStatus('Voz: ativa', 'info');
   }
 }
 

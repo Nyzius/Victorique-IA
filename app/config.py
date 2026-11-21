@@ -79,6 +79,28 @@ class Settings(BaseModel):
         "http://localhost:8765",
     ]
 
+    # ----------------- Voz (TTS + STT) -----------------
+    # Síntese de fala (texto -> áudio) via pyttsx3/SAPI5 (offline, Windows).
+    tts_enabled: bool = os.environ.get("ASSISTANT_TTS", "1").lower() not in (
+        "0", "false", "no"
+    )
+    # Reconhecimento de fala (áudio -> texto) via SpeechRecognition (offline).
+    stt_enabled: bool = os.environ.get("ASSISTANT_STT", "1").lower() not in (
+        "0", "false", "no"
+    )
+    # Falar automaticamente as respostas do assistente (pode ser desativado).
+    tts_speak_responses: bool = os.environ.get(
+        "ASSISTANT_TTS_SPEAK", "1"
+    ).lower() not in ("0", "false", "no")
+
+    # ----------------- llama.cpp (backend alternativo) -----------------
+    # Caminho para um modelo GGUF local. Se vazio, o Ollama continua sendo usado.
+    llama_cpp_model_path: str = os.environ.get("LLAMA_CPP_MODEL_PATH", "")
+    llama_cpp_enabled: bool = os.environ.get(
+        "ASSISTANT_LLAMA_CPP", "0"
+    ).lower() not in ("0", "false", "no")
+    llama_cpp_n_ctx: int = _env_int("LLAMA_CPP_N_CTX", 4096)
+
     # Security Whitelist: directories the assistant is authorized to access.
     # By default: the application workspace and the user's Documents folder.
     authorized_directories: list[str] = _env_dirs(

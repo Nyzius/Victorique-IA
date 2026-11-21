@@ -18,10 +18,12 @@ from app.core.personality import personality_manager
 from app.core.assistant import assistant_engine
 from app.core.backup import create_backup, list_backups, backup_path, restore_backup
 from app.models.ollama_client import ollama_client
+from app.models.llama_cpp_client import llama_cpp_client
 from app.rag.vector_store import vector_store
 from app.rag.document_loader import document_loader
 from app.security.permissions import security_manager
 from app.tools.registry import tool_registry
+from app.voice import tts_engine, stt_engine
 
 # Initialize database schema on startup
 init_db()
@@ -87,6 +89,7 @@ class ChatRequest(BaseModel):
     conversation_id: Optional[str] = ""
     message: str = Field(min_length=1)
     model: Optional[str] = None
+    backend: Optional[str] = None  # "ollama" ou "llama-cpp"
     project_id: Optional[str] = None
     personality_id: Optional[str] = None
     enable_rag: bool = True
@@ -151,6 +154,25 @@ class SettingsUpdate(BaseModel):
     default_model: Optional[str] = None
 
 
+class TTSSpeakRequest(BaseModel):
+    text: str = Field(min_length=1)
+    async_: Optional[bool] = False
+
+
+class STTListenRequest(BaseModel):
+    timeout: Optional[float] = 5.0
+    phrase_time_limit: Optional[float] = 15.0
+
+
+class STTTranscribeRequest(BaseModel):
+    file_path: str
+
+
+class LlamaCppLoadRequest(BaseModel):
+    model_path: str
+    n_ctx: Optional[int] = None
+
+
 def _get_setting(key: str, default: Optional[str] = None) -> Optional[str]:
     with get_connection() as conn:
         row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
@@ -191,6 +213,9 @@ async def health_check():
         "tool_calling_enabled": settings.tool_calling_enabled,
         "tools_count": len(tool_registry.tools),
         "ocr": document_loader.ocr.status(),
+        "tts": tts_engine.status(),
+        "stt": stt_engine.status(),
+        "llama_cpp": llama_cpp_client.status(),
     }
 
 @app.get("/api/models")
@@ -216,6 +241,93 @@ async def update_settings(req: SettingsUpdate):
         _set_setting("default_model", name)
         settings.default_model = name
     return {"status": "updated", "default_model": _current_model()}
+
+
+# ----------------- Voz (TTS / STT) -----------------
+@app.get("/api/tts/status")
+async def tts_status():
+    return tts_engine.status()
+
+
+@app.post("/api/tts/speak")
+async def tts_speak(req: TTSSpeakRequest):
+    if not settings.tts_enabled:
+        raise HTTPException(status_code=400, detail="TTS está desativado.")
+    if not tts_engine.available:
+        raise HTTPException(
+            status_code=503,
+            detail="TTS não disponível (pyttsx3/SAPI5 não instalado ou falhou ao iniciar).",
+        )
+    if req.async_:
+        tts_engine.speak_async(req.text)
+        return {"status": "speaking_async"}
+    ok = tts_engine.speak(req.text)
+    if not ok:
+        raise HTTPException(status_code=500, detail="Falha ao sintetizar fala.")
+    return {"status": "spoken"}
+
+
+@app.get("/api/stt/status")
+async def stt_status():
+    return stt_engine.status()
+
+
+@app.post("/api/stt/listen")
+async def stt_listen(req: STTListenRequest):
+    if not settings.stt_enabled:
+        raise HTTPException(status_code=400, detail="STT está desativado.")
+    if not stt_engine.available:
+        raise HTTPException(
+            status_code=503,
+            detail="STT não disponível (SpeechRecognition não instalado).",
+        )
+    if not stt_engine.microphone_available:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Microfone não disponível (PyAudio ausente). "
+                "Use /api/stt/transcribe com um arquivo de áudio."
+            ),
+        )
+    text = stt_engine.ouvir(
+        timeout=req.timeout or 5.0,
+        phrase_time_limit=req.phrase_time_limit or 15.0,
+    )
+    if text is None:
+        return {"status": "no_speech", "text": ""}
+    return {"status": "ok", "text": text}
+
+
+@app.post("/api/stt/transcribe")
+async def stt_transcribe(req: STTTranscribeRequest):
+    if not settings.stt_enabled:
+        raise HTTPException(status_code=400, detail="STT está desativado.")
+    if not stt_engine.available:
+        raise HTTPException(
+            status_code=503,
+            detail="STT não disponível (SpeechRecognition não instalado).",
+        )
+    text = stt_engine.transcrever_arquivo(req.file_path)
+    if text is None:
+        return {"status": "no_speech", "text": ""}
+    return {"status": "ok", "text": text}
+
+
+# ----------------- llama.cpp (backend alternativo) -----------------
+@app.get("/api/llama-cpp/status")
+async def llama_cpp_status():
+    return llama_cpp_client.status()
+
+
+@app.post("/api/llama-cpp/load")
+async def llama_cpp_load(req: LlamaCppLoadRequest):
+    if not settings.llama_cpp_enabled:
+        raise HTTPException(status_code=400, detail="llama.cpp está desativado.")
+    n_ctx = req.n_ctx or settings.llama_cpp_n_ctx
+    ok = llama_cpp_client.load_model(req.model_path, n_ctx=n_ctx)
+    if not ok:
+        raise HTTPException(status_code=400, detail=llama_cpp_client._init_error or "Falha ao carregar modelo.")
+    return {"status": "loaded", "model_path": req.model_path, "n_ctx": n_ctx}
 
 # ----------------- Chat (Streaming) -----------------
 @app.post("/api/chat")
@@ -246,6 +358,7 @@ async def chat_endpoint(req: ChatRequest, request: Request):
             conversation_id=conv["id"],
             user_message=req.message,
             model=req.model or _current_model(),
+            backend=req.backend,
             project_id=req.project_id,
             personality_id=req.personality_id,
             enable_rag=req.enable_rag,

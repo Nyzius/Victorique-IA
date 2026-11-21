@@ -6,8 +6,10 @@ from typing import AsyncGenerator, Dict, Any, Optional, List
 from app.memory.conversation_store import conversation_store
 from app.core.context_builder import context_builder
 from app.models.ollama_client import ollama_client
+from app.models.llama_cpp_client import llama_cpp_client
 from app.tools.registry import tool_registry
 from app.config import settings
+from app.voice import tts_engine
 
 logger = logging.getLogger("assistant")
 
@@ -160,7 +162,9 @@ class AssistantEngine:
         call, tokens are buffered instead of being shown to the user. If the
         buffer turns out to be ordinary text, it is flushed unchanged.
         """
-        async for token in ollama_client.chat_stream(
+        use_llama_cpp = state.get("use_llama_cpp", False)
+        client = llama_cpp_client if use_llama_cpp else ollama_client
+        async for token in client.chat_stream(
             tool_calls_out=state["calls"],
             **chat_kwargs,
         ):
@@ -229,6 +233,7 @@ class AssistantEngine:
         conversation_id: str,
         user_message: str,
         model: Optional[str] = None,
+        backend: Optional[str] = None,
         project_id: Optional[str] = None,
         personality_id: Optional[str] = None,
         enable_rag: bool = True
@@ -260,6 +265,27 @@ class AssistantEngine:
         )
 
         selected_model = model or settings.default_model
+        # Seleciona o backend de inferência. "llama-cpp" usa o cliente local
+        # GGUF; qualquer outro valor (ou None) usa o Ollama, que continua sendo
+        # o padrão e não é afetado por esta mudança.
+        use_llama_cpp = (backend or "ollama").strip().lower() == "llama-cpp"
+        if use_llama_cpp and not llama_cpp_client.available:
+            yield _event({
+                "type": "error",
+                "message": (
+                    "llama.cpp não está disponível. Carregue um modelo GGUF via "
+                    "POST /api/llama-cpp/load ou use o backend Ollama (padrão)."
+                ),
+            })
+            yield _event({
+                "type": "done",
+                "conversation_id": conversation_id,
+                "message_id": None,
+                "content": "",
+                "tool_calls": 0,
+            })
+            return
+
         full_response_parts: List[str] = []
         sources: list = []
         saved_id: Optional[str] = None
@@ -302,6 +328,7 @@ class AssistantEngine:
                     "text": [],
                     "calls": [],
                     "strip_fence": False,
+                    "use_llama_cpp": use_llama_cpp,
                 }
 
                 try:
@@ -333,6 +360,7 @@ class AssistantEngine:
                             "text": [],
                             "calls": [],
                             "strip_fence": False,
+                            "use_llama_cpp": use_llama_cpp,
                         }
                         async for token in self._stream_model_round(
                             state,
@@ -438,6 +466,11 @@ class AssistantEngine:
             full_content = "".join(full_response_parts)
             if not full_content.strip():
                 full_content = NO_TEXT_FALLBACK
+
+            # Fala a resposta automaticamente se o TTS estiver habilitado.
+            if settings.tts_enabled and settings.tts_speak_responses and tts_engine.available:
+                tts_engine.speak_async(full_content)
+
             saved = self._save_assistant_message(conversation_id, full_content, sources)
             saved_id = saved["id"] if saved else None
             finished = True
