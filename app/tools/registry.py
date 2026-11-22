@@ -5,8 +5,8 @@ from app.security.permissions import ActionCategory, security_manager
 from app.tools.file_tools import (
     list_directory, read_file, search_files, write_file, create_directory, delete_file
 )
-from app.tools.system_tools import calculate, get_system_info
-from app.tools.web_search import search_web
+from app.tools.system_tools import calculate, get_system_info, get_system_metrics
+from app.tools.web_search import search_web, read_url
 
 
 def _schema(properties: Dict[str, Any], required: Optional[List[str]] = None) -> Dict[str, Any]:
@@ -106,6 +106,12 @@ class ToolRegistry:
             category=ActionCategory.FREE,
             func=get_system_info,
         ))
+        self.register(ToolDefinition(
+            name="get_system_metrics",
+            description="Obtém métricas em tempo real de hardware: RAM (usada/total), VRAM/GPU (temperatura e uso da placa de vídeo) e CPU.",
+            category=ActionCategory.FREE,
+            func=get_system_metrics,
+        ))
 
         # Category 2: Requires explicit user authorization
         self.register(ToolDefinition(
@@ -163,10 +169,24 @@ class ToolRegistry:
                 },
             }, required=["query"]),
         ))
+        self.register(ToolDefinition(
+            name="read_url",
+            description="Acessa e lê o conteúdo textual de uma página da web pública a partir de sua URL.",
+            category=ActionCategory.EXTERNAL,
+            func=read_url,
+            risk_description="Esta ação conectará à internet para ler o conteúdo da página web informada.",
+            parameters=_schema({
+                "url": {"type": "string", "description": "URL completa da página web (ex.: 'https://exemplo.com/artigo')."},
+                "max_chars": {
+                    "type": "integer",
+                    "description": "Limite máximo de caracteres a extrair (padrão 6000).",
+                },
+            }, required=["url"]),
+        ))
 
     @staticmethod
     def _resource_target(params: Dict[str, Any]) -> str:
-        for key in ("path", "query", "expression"):
+        for key in ("path", "query", "expression", "url"):
             if params.get(key) is not None:
                 return str(params.get(key))
         return "local"

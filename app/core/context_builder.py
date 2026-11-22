@@ -40,7 +40,11 @@ class ContextBuilder:
                 )
 
         # 3. Persistent Memories (global + project-specific, explicitly created by the user)
-        memories_ctx = memory_store.get_context_for_prompt(project_id=project_id)
+        memories_ctx = memory_store.get_context_for_prompt(
+            project_id=project_id,
+            user_query=user_query,
+            max_items=getattr(settings, "max_active_memories_prompt", 6),
+        )
         if memories_ctx:
             system_parts.append(f"\n{memories_ctx}")
 
@@ -106,16 +110,34 @@ class ContextBuilder:
         # Combine system prompt
         full_system_prompt = "\n\n".join(system_parts)
 
-        # 6. Format recent messages
+        # 6. Format recent messages with rolling history compression
         formatted_messages = []
         limit = max(1, int(settings.max_history_messages))
-        recent_history = conversation_history[-limit:]
+        valid_history = [
+            m for m in conversation_history
+            if m.get("role") in ("user", "assistant") and m.get("content")
+        ]
+
+        if len(valid_history) > limit:
+            # Compacta mensagens anteriores em um resumo contextual para não perder tópicos antigos
+            older = valid_history[:-limit]
+            recent_history = valid_history[-limit:]
+            topics = []
+            for m in older[-6:]:
+                snippet = m["content"][:100].replace("\n", " ").strip()
+                topics.append(f"{m['role']}: {snippet}")
+            if topics:
+                summary_note = (
+                    "\n[RESUMO DE MENSAGENS ANTERIORES DA CONVERSA]:\n"
+                    + "\n".join(f"- {t}" for t in topics)
+                )
+                full_system_prompt += "\n" + summary_note
+        else:
+            recent_history = valid_history
+
         for m in recent_history:
-            role = m.get("role")
-            if role not in ("user", "assistant"):
-                continue
             formatted_messages.append({
-                "role": role,
+                "role": m["role"],
                 "content": m["content"]
             })
 

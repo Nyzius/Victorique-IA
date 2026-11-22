@@ -1,12 +1,13 @@
 import json
 import logging
+import re
 import uuid
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
 import numpy as np
 
-from app.config import DOCS_DIR
+from app.config import DOCS_DIR, settings
 from app.memory.database import get_connection
 from app.rag.document_loader import document_loader
 from app.rag.text_splitter import text_splitter
@@ -23,6 +24,26 @@ def cosine_similarity(v1: List[float], v2: List[float]) -> float:
     if norm_a == 0 or norm_b == 0:
         return 0.0
     return float(np.dot(a, b) / (norm_a * norm_b))
+
+
+def _lexical_score(query: str, text: str) -> float:
+    """Calcula correspondência léxica/BM25 simplificada entre a busca e o texto."""
+    q_lower = query.lower().strip()
+    t_lower = text.lower()
+    if not q_lower or not t_lower:
+        return 0.0
+
+    # Bônus forte se a frase inteira da busca aparece exatamente no texto
+    exact_bonus = 0.5 if q_lower in t_lower else 0.0
+
+    # Quebra em termos significativos (palavras com 3 ou mais caracteres)
+    terms = [w for w in re.findall(r"\w+", q_lower) if len(w) >= 3]
+    if not terms:
+        return exact_bonus
+
+    matches = sum(1 for term in terms if term in t_lower)
+    term_ratio = matches / len(terms)
+    return min(1.0, 0.5 * term_ratio + exact_bonus)
 
 
 class VectorStore:
@@ -130,7 +151,15 @@ class VectorStore:
                 try:
                     chunk_vec = json.loads(r["embedding_json"])
                     sim = cosine_similarity(query_vec, chunk_vec)
-                    if sim >= min_score:
+                    
+                    if getattr(settings, "rag_hybrid_search", True):
+                        lex = _lexical_score(query, r["content"])
+                        # Fusão híbrida ponderada: 70% semântica vetorial, 30% correspondência léxica exata
+                        final_score = 0.7 * sim + 0.3 * lex
+                    else:
+                        final_score = sim
+
+                    if final_score >= min_score or (getattr(settings, "rag_hybrid_search", True) and sim >= min_score):
                         scored_results.append({
                             "chunk_id": r["id"],
                             "document_id": r["document_id"],
@@ -138,7 +167,8 @@ class VectorStore:
                             "file_path": r["file_path"],
                             "page": r["page_number"],
                             "content": r["content"],
-                            "score": round(sim, 4)
+                            "score": round(final_score, 4),
+                            "similarity": round(sim, 4),
                         })
                 except Exception as e:
                     logger.debug(f"Error calculating similarity: {e}")

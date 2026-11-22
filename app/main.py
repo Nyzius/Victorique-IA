@@ -319,6 +319,35 @@ async def stt_transcribe(req: STTTranscribeRequest):
     return {"status": "ok", "text": text}
 
 
+@app.post("/api/stt/upload-audio")
+async def stt_upload_audio(file: UploadFile = File(...)):
+    """
+    Recebe arquivo de áudio gravado diretamente pelo frontend (microfone do navegador/WebView2)
+    e executa o reconhecimento de voz localmente.
+    """
+    if not settings.stt_enabled:
+        raise HTTPException(status_code=400, detail="STT está desativado.")
+    if not stt_engine.available:
+        raise HTTPException(
+            status_code=503,
+            detail="STT não disponível (SpeechRecognition não instalado).",
+        )
+    import tempfile
+    suffix = Path(file.filename or "audio.wav").suffix or ".wav"
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        tmp_path = Path(tmp.name)
+        content = await file.read()
+        tmp.write(content)
+
+    try:
+        text = stt_engine.transcrever_arquivo(str(tmp_path))
+        if text is None:
+            return {"status": "no_speech", "text": ""}
+        return {"status": "ok", "text": text}
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
 # ----------------- llama.cpp (backend alternativo) -----------------
 @app.get("/api/llama-cpp/status")
 async def llama_cpp_status():

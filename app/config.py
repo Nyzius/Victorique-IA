@@ -59,8 +59,20 @@ class Settings(BaseModel):
     max_history_messages: int = 15
     max_message_chars: int = 32000
     max_upload_mb: int = 25
-    allowed_document_extensions: list[str] = [".pdf", ".txt", ".md"]
+    allowed_document_extensions: list[str] = [
+        ".pdf", ".txt", ".md", ".docx", ".epub",
+        ".csv", ".json", ".py", ".js", ".html",
+        ".css", ".xml", ".yaml", ".yml"
+    ]
     authorization_ttl_seconds: int = 120
+
+    # RAG: Busca Híbrida (vetorial + palavras-chave/BM25)
+    rag_hybrid_search: bool = os.environ.get(
+        "ASSISTANT_HYBRID_RAG", "1"
+    ).lower() not in ("0", "false", "no")
+
+    # Memória: limite de memórias ativas injetadas no prompt para economizar contexto
+    max_active_memories_prompt: int = _env_int("ASSISTANT_MAX_MEMORIES_PROMPT", 6)
 
     # Tool calling: the model may request tools; only FREE tools run
     # automatically. Protected/external tools always require user approval.

@@ -1,6 +1,9 @@
 import logging
 import os
+import re
 import shutil
+import zipfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -165,8 +168,68 @@ class DocumentLoader:
             return self._load_pdf(p)
         elif ext in [".txt", ".md"]:
             return self._load_text(p)
+        elif ext == ".docx":
+            return self._load_docx(p)
+        elif ext == ".epub":
+            return self._load_epub(p)
+        elif ext in [".csv", ".json", ".py", ".js", ".html", ".css", ".xml", ".yaml", ".yml"]:
+            return self._load_structured_text(p)
         else:
-            raise ValueError(f"Formato de arquivo não suportado: '{ext}'. Suportados: .pdf, .txt, .md")
+            supported = ", ".join(settings.allowed_document_extensions)
+            raise ValueError(
+                f"Formato de arquivo não suportado: '{ext}'. Suportados: {supported}"
+            )
+
+    def _load_docx(self, path: Path) -> List[Dict[str, Any]]:
+        """Extrai parágrafos de documento Word (.docx) sem dependências externas."""
+        try:
+            with zipfile.ZipFile(str(path)) as z:
+                xml_content = z.read("word/document.xml")
+            root = ET.fromstring(xml_content)
+            ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+            paragraphs = []
+            for p in root.iterfind(".//w:p", ns):
+                texts = [node.text for node in p.iterfind(".//w:t", ns) if node.text]
+                if texts:
+                    paragraphs.append("".join(texts))
+            full_text = "\n\n".join(paragraphs).strip()
+            if not full_text:
+                return []
+            return [{"page": 1, "text": full_text}]
+        except Exception as exc:
+            raise ValueError(f"Falha ao ler arquivo DOCX '{path.name}': {exc}") from exc
+
+    def _load_epub(self, path: Path) -> List[Dict[str, Any]]:
+        """Extrai capítulos/seções de livro digital (.epub)."""
+        try:
+            with zipfile.ZipFile(str(path)) as z:
+                html_files = [
+                    f for f in z.namelist()
+                    if f.lower().endswith((".html", ".xhtml", ".htm"))
+                ]
+                pages = []
+                page_idx = 1
+                for h in sorted(html_files):
+                    raw = z.read(h).decode("utf-8", errors="replace")
+                    # Remove scripts, styles e tags HTML
+                    text = re.sub(r"<style.*?</style>", "", raw, flags=re.DOTALL | re.IGNORECASE)
+                    text = re.sub(r"<script.*?</script>", "", text, flags=re.DOTALL | re.IGNORECASE)
+                    text = re.sub(r"<[^>]+>", " ", text)
+                    text = " ".join(text.split()).strip()
+                    if len(text) > 40:
+                        pages.append({"page": page_idx, "text": text})
+                        page_idx += 1
+                return pages
+        except Exception as exc:
+            raise ValueError(f"Falha ao ler arquivo EPUB '{path.name}': {exc}") from exc
+
+    def _load_structured_text(self, path: Path) -> List[Dict[str, Any]]:
+        """Carrega arquivos de código, dados e texto estruturado."""
+        text = path.read_text(encoding="utf-8", errors="replace").strip()
+        if not text:
+            return []
+        header = f"[{path.name} - Formato {path.suffix.upper()}]\n"
+        return [{"page": 1, "text": header + text}]
 
     def _load_pdf(self, path: Path) -> List[Dict[str, Any]]:
         reader = PdfReader(str(path))

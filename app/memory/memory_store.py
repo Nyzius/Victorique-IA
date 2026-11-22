@@ -130,12 +130,19 @@ class MemoryStore:
             cur = conn.execute("DELETE FROM memories WHERE id = ?", (mem_id,))
             return cur.rowcount > 0
 
-    def get_context_for_prompt(self, project_id: Optional[str] = None) -> str:
+    def get_context_for_prompt(
+        self,
+        project_id: Optional[str] = None,
+        user_query: Optional[str] = None,
+        max_items: Optional[int] = None,
+    ) -> str:
         """
         Retrieves active memories formatted for injection into the prompt.
         With a project: includes global memories plus that project's memories.
         Without a project: only global memories (never another project's data).
+        When user_query is provided and there are many memories, ranks by relevance.
         """
+        limit = max_items or 6
         with get_connection() as conn:
             if project_id:
                 rows = conn.execute(
@@ -154,6 +161,21 @@ class MemoryStore:
 
         if not memories:
             return ""
+
+        # Se houver mais memórias que o limite e tivermos uma query do usuário,
+        # ordenamos pela relevância léxica com a query para economizar janela de contexto.
+        if len(memories) > limit and user_query:
+            import re
+            query_terms = [w.lower() for w in re.findall(r"\w+", user_query) if len(w) >= 3]
+            def _score_mem(m):
+                text = (m["content"] + " " + m["category"]).lower()
+                matches = sum(1 for t in query_terms if t in text)
+                return matches
+
+            memories.sort(key=_score_mem, reverse=True)
+            memories = memories[:limit]
+        elif len(memories) > limit:
+            memories = memories[:limit]
 
         lines = ["MEMÓRIAS PERSISTENTES AUTORIZADAS PELO USUÁRIO:"]
         total = 0
