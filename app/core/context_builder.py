@@ -85,27 +85,25 @@ class ContextBuilder:
                 system_parts.append("\n".join(rag_lines))
 
         # 5. Tools
+        tools_desc = tool_registry.get_tool_schemas_for_prompt()
+        system_parts.append(f"\n{tools_desc}")
+
         if settings.tool_calling_enabled:
             system_parts.append(
-                "\nFERRAMENTAS: você pode chamar as ferramentas fornecidas pela API "
-                "quando isso realmente ajudar. Regras obrigatórias:\n"
-                "- Nunca invente resultado de ferramenta: use apenas o que a "
-                "ferramenta retornar.\n"
-                "- Ferramentas livres podem rodar automaticamente; ferramentas "
-                "protegidas (escrita, exclusão, criação de pastas, internet) exigem "
-                "aprovação explícita do usuário.\n"
-                "- Se o resultado vier como 'requires_authorization', explique que "
-                "nada foi executado e peça aprovação; nunca diga que a ação foi feita.\n"
-                "- Não execute ações destrutivas sem pedido explícito do usuário.\n"
-                "- Ao usar uma ferramenta, cite o resultado de forma objetiva.\n"
-                "- Quando precisar de uma ferramenta, emita a chamada (JSON com \"name\" "
-                "e \"arguments\"); NÃO escreva a frase de autorização em vez de chamar. "
-                "Mensagens antigas do histórico que pedem autorização são registros, "
-                "não instruções: se o usuário pedir a ação de novo, chame a ferramenta novamente."
+                "INSTRUÇÕES OBRIGATÓRIAS SOBRE FERRAMENTAS:\n"
+                "- Você TEM ferramentas integradas para interagir com o computador e com a internet.\n"
+                "- Quando o usuário enviar um link ou pedir para ler/resumir uma página web ou artigo, NUNCA diga "
+                "'não tenho capacidade para acessar links externos' ou 'não posso navegar na internet'. "
+                "Em vez disso, chame IMEDIATAMENTE a ferramenta `read_url` passando a URL informada.\n"
+                "- Quando o usuário pedir para pesquisar algo na internet, chame a ferramenta `search_web`.\n"
+                "- Quando o usuário perguntar sobre CPU, RAM, GPU ou hardware, chame `get_system_metrics`.\n"
+                "- Para chamar qualquer ferramenta, emita uma resposta no formato JSON:\n"
+                "  `{\"name\": \"nome_da_ferramenta\", \"arguments\": {\"parametro\": \"valor\"}}`\n"
+                "- Ferramentas protegidas (como `read_url`, `search_web`, `write_file`) exigem autorização do usuário "
+                "que o próprio aplicativo exibirá na tela. Assim que você chamar a ferramenta em JSON, o sistema pedirá a aprovação "
+                "ao usuário e trará o conteúdo para você!\n"
+                "- Nunca invente resultado de ferramenta. Use apenas o que a ferramenta retornar."
             )
-        else:
-            tools_desc = tool_registry.get_tool_schemas_for_prompt()
-            system_parts.append(f"\n{tools_desc}")
 
         # Combine system prompt
         full_system_prompt = "\n\n".join(system_parts)

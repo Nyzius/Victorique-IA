@@ -306,3 +306,24 @@ def test_model_cannot_execute_protected_tool_directly(client, tmp_path):
     ).json()
     assert result["status"] == "requires_authorization"
     assert not target.exists()
+
+
+@pytest.mark.asyncio
+async def test_read_url_tool_call_stops_at_authorization(monkeypatch):
+    _install_context(monkeypatch)
+
+    async def fake_stream(*args, **kwargs):
+        yield '{"name": "read_url", "arguments": {"url": "https://example.com/artigo"}}'
+
+    monkeypatch.setattr(ollama_client, "chat_stream", fake_stream)
+    conv = conversation_store.create_conversation(title="Teste Read URL")
+    try:
+        events = await _collect(conv["id"], "O que diz esse artigo https://example.com/artigo?")
+        types = [e["type"] for e in events]
+        assert "tool_call" in types
+        assert "authorization_required" in types
+        auth_ev = [e for e in events if e["type"] == "authorization_required"][0]
+        assert auth_ev["tool_name"] == "read_url"
+        assert "example.com" in auth_ev["resource"]
+    finally:
+        conversation_store.delete_conversation(conv["id"])
