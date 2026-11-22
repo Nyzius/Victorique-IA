@@ -268,9 +268,14 @@ class LlamaCppServerClient:
                         try:
                             chunk = json.loads(data)
                             delta = chunk.get("choices", [{}])[0].get("delta", {})
-                            content = delta.get("content", "")
-                            if content:
-                                yield content
+                            # Suporte a modelos de raciocínio (Qwen 3.5, DeepSeek, etc.):
+                            # Quando o modelo está pensando, o texto vem em reasoning_content.
+                            # A resposta final vem em content.
+                            content = delta.get("content") or ""
+                            reasoning = delta.get("reasoning_content") or ""
+                            text_token = content or reasoning
+                            if text_token:
+                                yield text_token
                         except json.JSONDecodeError:
                             continue
 
