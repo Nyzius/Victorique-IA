@@ -11,6 +11,7 @@ os.environ["ASSISTANT_DATA_DIR"] = str(_TEST_DATA)
 os.environ["ASSISTANT_DB_PATH"] = str(_TEST_DATA / "assistant.db")
 os.environ["ASSISTANT_TESTING"] = "1"
 os.environ["ASSISTANT_TURBO_MODE"] = "0"
+os.environ["ASSISTANT_ALLOW_ALL_DIRS"] = "0"
 os.environ["ASSISTANT_MAX_TOOL_ROUNDS"] = "3"
 os.environ.setdefault("ASSISTANT_MODEL", os.environ.get("ASSISTANT_MODEL", "qwen2.5-coder:7b"))
 # Nos testes, forcar Ollama como backend (mockado nos testes) para evitar

@@ -50,15 +50,18 @@ class PathGuard:
             return False
 
     def is_safe_path(self, target_path: str) -> bool:
-        """
+        r"""
         True when the resolved target is inside an authorized directory.
-        Prevents directory traversal, absolute paths outside the whitelist,
-        and symlink/junction escapes.
+        When allow_all_directories or turbo_mode is enabled, allows free navigation
+        across any absolute path on the computer (C:\, D:\, etc.).
         """
         try:
             resolved_target = Path(target_path).expanduser().resolve()
             if not resolved_target.is_absolute():
                 return False
+            # Navegação livre no PC se configurado
+            if getattr(settings, "allow_all_directories", False) or getattr(settings, "turbo_mode", False):
+                return True
             for allowed in self.authorized_dirs:
                 if self._is_within(resolved_target, allowed):
                     return True

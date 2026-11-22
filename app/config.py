@@ -72,6 +72,11 @@ class Settings(BaseModel):
         "ASSISTANT_TURBO_MODE", "1"
     ).lower() not in ("0", "false", "no")
 
+    # Acesso livre a diretórios: permite navegar e ler qualquer disco/pasta do computador (C:\, D:\, etc.)
+    allow_all_directories: bool = os.environ.get(
+        "ASSISTANT_ALLOW_ALL_DIRS", "1"
+    ).lower() not in ("0", "false", "no")
+
     # RAG: Busca Híbrida (vetorial + palavras-chave/BM25)
     rag_hybrid_search: bool = os.environ.get(
         "ASSISTANT_HYBRID_RAG", "1"

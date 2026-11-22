@@ -53,26 +53,26 @@ class ToolRegistry:
         self.tools[tool.name] = tool
 
     def _register_default_tools(self):
-        # Category 1: Free (still limited to the authorized directories)
+        # Category 1: Free (acesso livre para leitura e exploração no computador)
         self.register(ToolDefinition(
             name="list_directory",
-            description="Lista arquivos e pastas em um diretório autorizado.",
+            description="Lista arquivos e pastas em qualquer diretório ou disco do computador (ex.: 'C:\\', 'D:\\', 'C:\\Users\\Usuário\\Downloads').",
             category=ActionCategory.FREE,
             func=list_directory,
             parameters=_schema({
                 "path": {
                     "type": "string",
-                    "description": "Diretório a listar. Use '.' para o diretório de dados do assistente.",
+                    "description": "Caminho do diretório a listar (ex.: 'C:\\', 'D:\\Livros', 'C:\\Users\\Usuário\\Documents'). Use '.' para a pasta de dados.",
                 },
             }),
         ))
         self.register(ToolDefinition(
             name="read_file",
-            description="Lê o conteúdo em texto de um arquivo autorizado.",
+            description="Lê o conteúdo em texto de qualquer arquivo no computador.",
             category=ActionCategory.FREE,
             func=read_file,
             parameters=_schema({
-                "path": {"type": "string", "description": "Caminho do arquivo a ler."},
+                "path": {"type": "string", "description": "Caminho completo do arquivo a ler (ex.: 'C:\\caminho\\arquivo.txt')."},
                 "max_chars": {
                     "type": "integer",
                     "description": "Máximo de caracteres retornados (padrão 15000).",
@@ -81,14 +81,14 @@ class ToolRegistry:
         ))
         self.register(ToolDefinition(
             name="search_files",
-            description="Busca arquivos por nome ou padrão nos diretórios autorizados.",
+            description="Busca arquivos por nome ou padrão glob em qualquer pasta ou disco do computador.",
             category=ActionCategory.FREE,
             func=search_files,
             parameters=_schema({
-                "path": {"type": "string", "description": "Diretório base da busca."},
+                "path": {"type": "string", "description": "Diretório base da busca (ex.: 'C:\\Users\\Usuário', 'D:\\')."},
                 "pattern": {
                     "type": "string",
-                    "description": "Padrão glob, por exemplo '*.txt'.",
+                    "description": "Padrão glob, por exemplo '*.txt', '*.pdf', '*.py'.",
                 },
             }),
         ))

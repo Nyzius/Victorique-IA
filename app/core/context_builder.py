@@ -91,9 +91,10 @@ class ContextBuilder:
         if settings.tool_calling_enabled:
             turbo_note = (
                 "\nMODO TURBO AUTÔNOMO ATIVO: O usuário concedeu permissão total para você executar "
-                "ferramentas diretamente (como `read_url`, `search_web`, `write_file`, etc.) sem interromper para confirmação. "
-                "Portanto, quando precisar de informações da web ou arquivos, chame a ferramenta imediatamente e "
-                "forneça uma resposta detalhada, aprofundada e completa aproveitando a ampla janela de contexto disponível!"
+                "ferramentas diretamente (como `read_url`, `search_web`, `list_directory`, `read_file`, `write_file`, etc.) "
+                "sem interromper para pedir confirmações. Você tem permissão para navegar e ler arquivos em qualquer pasta do "
+                "computador (C:\\, D:\\, Downloads, Documentos, Livros, etc.). Chame a ferramenta necessária imediatamente e "
+                "forneça a resposta completa utilizando a ampla janela de contexto disponível!"
             ) if getattr(settings, "turbo_mode", False) else ""
             system_parts.append(
                 "INSTRUÇÕES OBRIGATÓRIAS SOBRE FERRAMENTAS:\n"
