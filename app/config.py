@@ -53,12 +53,13 @@ class Settings(BaseModel):
     # (6 GB) offloads part of the layers to CPU. qwen2.5:3b runs 100% on GPU.
     default_model: str = os.environ.get("ASSISTANT_MODEL", "qwen2.5-coder:7b")
     embedding_model: str = os.environ.get("ASSISTANT_EMBEDDING_MODEL", "nomic-embed-text")
-    max_context_tokens: int = _env_int("ASSISTANT_NUM_CTX", 4096)
-    max_output_tokens: int = _env_int("ASSISTANT_MAX_OUTPUT_TOKENS", 1024)
+    # Contexto duplicado (8192) e tokens de saída ampliados (4096) para raciocínio profundo
+    max_context_tokens: int = _env_int("ASSISTANT_NUM_CTX", 8192)
+    max_output_tokens: int = _env_int("ASSISTANT_MAX_OUTPUT_TOKENS", 4096)
     temperature: float = 0.7
-    max_history_messages: int = 15
-    max_message_chars: int = 32000
-    max_upload_mb: int = 25
+    max_history_messages: int = 25
+    max_message_chars: int = 64000
+    max_upload_mb: int = 50
     allowed_document_extensions: list[str] = [
         ".pdf", ".txt", ".md", ".docx", ".epub",
         ".csv", ".json", ".py", ".js", ".html",
@@ -66,22 +67,26 @@ class Settings(BaseModel):
     ]
     authorization_ttl_seconds: int = 120
 
+    # Modo Turbo para testes: ferramentas externas e autônomas executam diretamente
+    turbo_mode: bool = os.environ.get(
+        "ASSISTANT_TURBO_MODE", "1"
+    ).lower() not in ("0", "false", "no")
+
     # RAG: Busca Híbrida (vetorial + palavras-chave/BM25)
     rag_hybrid_search: bool = os.environ.get(
         "ASSISTANT_HYBRID_RAG", "1"
     ).lower() not in ("0", "false", "no")
 
     # Memória: limite de memórias ativas injetadas no prompt para economizar contexto
-    max_active_memories_prompt: int = _env_int("ASSISTANT_MAX_MEMORIES_PROMPT", 6)
+    max_active_memories_prompt: int = _env_int("ASSISTANT_MAX_MEMORIES_PROMPT", 10)
 
-    # Tool calling: the model may request tools; only FREE tools run
-    # automatically. Protected/external tools always require user approval.
+    # Tool calling
     tool_calling_enabled: bool = os.environ.get(
         "ASSISTANT_TOOL_CALLING", "1"
     ).lower() not in ("0", "false", "no")
-    max_tool_rounds: int = _env_int("ASSISTANT_MAX_TOOL_ROUNDS", 3)
-    max_tool_calls_per_round: int = _env_int("ASSISTANT_MAX_TOOL_CALLS", 3)
-    tool_result_max_chars: int = _env_int("ASSISTANT_TOOL_RESULT_CHARS", 4000)
+    max_tool_rounds: int = _env_int("ASSISTANT_MAX_TOOL_ROUNDS", 6)
+    max_tool_calls_per_round: int = _env_int("ASSISTANT_MAX_TOOL_CALLS", 4)
+    tool_result_max_chars: int = _env_int("ASSISTANT_TOOL_RESULT_CHARS", 8000)
 
     # OCR for PDFs without an embedded text layer. Uses Tesseract; if it is
     # not installed the app keeps working and reports the limitation.
@@ -128,7 +133,7 @@ class Settings(BaseModel):
     )
     llama_cpp_host: str = os.environ.get("LLAMA_CPP_HOST", "127.0.0.1")
     llama_cpp_port: int = _env_int("LLAMA_CPP_PORT", 8899)
-    llama_cpp_n_ctx: int = _env_int("LLAMA_CPP_N_CTX", 4096)
+    llama_cpp_n_ctx: int = _env_int("LLAMA_CPP_N_CTX", 8192)
     llama_cpp_n_gpu_layers: int = _env_int("LLAMA_CPP_N_GPU_LAYERS", 33)
     # Backend padrão: "llama-cpp" usa o servidor local; "ollama" usa o Ollama.
     default_backend: str = os.environ.get(

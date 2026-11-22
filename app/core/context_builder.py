@@ -89,6 +89,12 @@ class ContextBuilder:
         system_parts.append(f"\n{tools_desc}")
 
         if settings.tool_calling_enabled:
+            turbo_note = (
+                "\nMODO TURBO AUTÔNOMO ATIVO: O usuário concedeu permissão total para você executar "
+                "ferramentas diretamente (como `read_url`, `search_web`, `write_file`, etc.) sem interromper para confirmação. "
+                "Portanto, quando precisar de informações da web ou arquivos, chame a ferramenta imediatamente e "
+                "forneça uma resposta detalhada, aprofundada e completa aproveitando a ampla janela de contexto disponível!"
+            ) if getattr(settings, "turbo_mode", False) else ""
             system_parts.append(
                 "INSTRUÇÕES OBRIGATÓRIAS SOBRE FERRAMENTAS:\n"
                 "- Você TEM ferramentas integradas para interagir com o computador e com a internet.\n"
@@ -99,10 +105,8 @@ class ContextBuilder:
                 "- Quando o usuário perguntar sobre CPU, RAM, GPU ou hardware, chame `get_system_metrics`.\n"
                 "- Para chamar qualquer ferramenta, emita uma resposta no formato JSON:\n"
                 "  `{\"name\": \"nome_da_ferramenta\", \"arguments\": {\"parametro\": \"valor\"}}`\n"
-                "- Ferramentas protegidas (como `read_url`, `search_web`, `write_file`) exigem autorização do usuário "
-                "que o próprio aplicativo exibirá na tela. Assim que você chamar a ferramenta em JSON, o sistema pedirá a aprovação "
-                "ao usuário e trará o conteúdo para você!\n"
                 "- Nunca invente resultado de ferramenta. Use apenas o que a ferramenta retornar."
+                f"{turbo_note}"
             )
 
         # Combine system prompt

@@ -133,3 +133,25 @@ def test_stt_upload_audio_endpoint():
     assert response.status_code == 200
     data = response.json()
     assert "status" in data
+
+
+@pytest.mark.asyncio
+async def test_turbo_mode_auto_authorization(monkeypatch, tmp_path):
+    from app.tools.registry import tool_registry
+    from app.security.path_guard import path_guard
+
+    path_guard.add_authorized_directory(str(tmp_path))
+    target = tmp_path / "turbo_file.txt"
+
+    # Com turbo_mode = True, write_file executa imediatamente sem pending request
+    monkeypatch.setattr(settings, "turbo_mode", True)
+    tool = tool_registry.tools["write_file"]
+    assert tool.needs_approval is False
+
+    res = await tool_registry.execute_tool(
+        "write_file",
+        {"path": str(target), "content": "conteúdo gerado autonomamente no modo turbo"}
+    )
+    assert res["status"] == "success"
+    assert target.exists()
+    assert target.read_text(encoding="utf-8") == "conteúdo gerado autonomamente no modo turbo"

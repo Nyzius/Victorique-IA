@@ -1,6 +1,7 @@
 import inspect
 from typing import Dict, Any, Callable, List, Optional
 
+from app.config import settings
 from app.security.permissions import ActionCategory, security_manager
 from app.tools.file_tools import (
     list_directory, read_file, search_files, write_file, create_directory, delete_file
@@ -37,6 +38,9 @@ class ToolDefinition:
 
     @property
     def needs_approval(self) -> bool:
+        if getattr(settings, "turbo_mode", False):
+            # No modo turbo/testes, o assistente tem permissão para agir sem interromper o fluxo
+            return False
         return self.category in (ActionCategory.REQUIRES_AUTH, ActionCategory.EXTERNAL)
 
 
