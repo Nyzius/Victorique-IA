@@ -4,6 +4,14 @@ from pydantic import BaseModel
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+# Caminho padrão da instalação local do llama.cpp (já presente na máquina).
+DEFAULT_LLAMA_CPP_DIR = Path(
+    os.environ.get("LLAMA_CPP_DIR", r"C:\Users\Usuário\llama.cpp")
+)
+DEFAULT_LLAMA_CPP_MODEL = (
+    DEFAULT_LLAMA_CPP_DIR / "models" / "Qwen_Qwen3.5-9B-IQ4_XS.gguf"
+)
+
 # Data location can be overridden for tests or portable installs.
 # Never point this at user data you do not intend to modify.
 DATA_DIR = Path(os.environ.get("ASSISTANT_DATA_DIR", str(BASE_DIR / "data"))).expanduser().resolve()
@@ -93,13 +101,31 @@ class Settings(BaseModel):
         "ASSISTANT_TTS_SPEAK", "1"
     ).lower() not in ("0", "false", "no")
 
-    # ----------------- llama.cpp (backend alternativo) -----------------
-    # Caminho para um modelo GGUF local. Se vazio, o Ollama continua sendo usado.
-    llama_cpp_model_path: str = os.environ.get("LLAMA_CPP_MODEL_PATH", "")
-    llama_cpp_enabled: bool = os.environ.get(
-        "ASSISTANT_LLAMA_CPP", "0"
-    ).lower() not in ("0", "false", "no")
+    # ----------------- llama.cpp (backend padrão agora) -----------------
+    # Caminho para o executável llama-server.exe (instalação local já presente).
+    llama_cpp_dir: str = os.environ.get(
+        "LLAMA_CPP_DIR", r"C:\Users\Usuário\llama.cpp"
+    )
+    llama_cpp_server_exe: str = os.environ.get(
+        "LLAMA_CPP_SERVER_EXE", ""
+    )
+    # Modelo GGUF já baixado localmente (não há download automático).
+    llama_cpp_model_path: str = os.environ.get(
+        "LLAMA_CPP_MODEL_PATH",
+        str(DEFAULT_LLAMA_CPP_DIR / "models" / "Qwen_Qwen3.5-9B-IQ4_XS.gguf"),
+    )
+    llama_cpp_host: str = os.environ.get("LLAMA_CPP_HOST", "127.0.0.1")
+    llama_cpp_port: int = _env_int("LLAMA_CPP_PORT", 8899)
     llama_cpp_n_ctx: int = _env_int("LLAMA_CPP_N_CTX", 4096)
+    llama_cpp_n_gpu_layers: int = _env_int("LLAMA_CPP_N_GPU_LAYERS", 33)
+    # Backend padrão: "llama-cpp" usa o servidor local; "ollama" usa o Ollama.
+    default_backend: str = os.environ.get(
+        "ASSISTANT_DEFAULT_BACKEND", "llama-cpp"
+    )
+    # Se True, inicia o llama-server automaticamente ao subir o app.
+    llama_cpp_auto_start: bool = os.environ.get(
+        "ASSISTANT_LLAMA_CPP_AUTO_START", "1"
+    ).lower() not in ("0", "false", "no")
 
     # Security Whitelist: directories the assistant is authorized to access.
     # By default: the application workspace and the user's Documents folder.

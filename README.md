@@ -1,14 +1,19 @@
 # Assistente Virtual Pessoal (Windows, local)
 
-Aplicativo desktop Windows com chat via Ollama, personalidade configurável, histórico,
-memórias explícitas, projetos independentes, RAG de documentos locais com referências,
-ferramentas limitadas com autorização no backend e interface própria. Funciona offline
-depois da instalação. **Não inclui voz nesta versão.**
+Aplicativo desktop Windows com chat via Ollama e llama.cpp, personalidade configurável,
+histórico, memórias explícitas, projetos independentes, RAG de documentos locais com
+referências, ferramentas limitadas com autorização no backend, voz (TTS/STT) local e
+interface própria. Funciona offline depois da instalação.
 
-> Situação verificada em 18/11/2026 nesta máquina: Windows 11, Python 3.15.1,
-> Ollama 0.40.16, GTX 1660 Super 6 GB, 16 GB RAM. Modelo padrão:
-> `qwen2.5-coder:7b` (instalado). Embeddings: `nomic-embed-text`.
-> OCR local via Tesseract 5.4.0 (idioma `eng`; `por` não foi baixado).
+> Situação verificada em 21/11/2026 nesta máquina: Windows 11, Python 3.15.1,
+> Ollama 0.40.16, GTX 1660 Super 6 GB, 16 GB RAM.
+> - Backend padrão: `llama-cpp-server` (`llama-server.exe` em `C:\Users\Usuário\llama.cpp\`)
+>   com modelo `Qwen_Qwen3.5-9B-IQ4_XS.gguf` (5,5 GB IQ4_XS, já baixado localmente).
+> - Alternativa: Ollama com `qwen2.5-coder:7b` e `qwen2.5:3b`.
+> - Embeddings: `nomic-embed-text` (via Ollama).
+> - OCR local via Tesseract 5.4.0 (idioma `eng`; `por` não foi baixado).
+> - Voz: TTS via pyttsx3/SAPI5 (disponível); STT via SpeechRecognition (arquivos de áudio;
+>   microfone requer PyAudio).
 
 ---
 
@@ -40,10 +45,16 @@ navegador padrão. O backend escuta apenas em `127.0.0.1:8765` (ou `ASSISTANT_PO
 ### Pré-requisitos já presentes
 
 - `.venv` com Python 3.15.1;
-- Ollama ativo em `127.0.0.1:11434`;
-- modelos `qwen2.5-coder:7b` e `nomic-embed-text`;
+- Ollama ativo em `127.0.0.1:11434` (backend alternativo);
+- modelos `qwen2.5-coder:7b` e `nomic-embed-text` (via Ollama);
+- **llama.cpp** já instalado em `C:\Users\Usuário\llama.cpp\` com
+  `llama-server.exe` e o modelo `models/Qwen_Qwen3.5-9B-IQ4_XS.gguf`
+  (5,5 GB, já baixado localmente — **não há download automático de modelo**);
 - **Tesseract-OCR** em `C:\Program Files\Tesseract-OCR` (opcional: sem ele o app continua
-  funcionando, mas PDFs digitalizados sem camada de texto são recusados com aviso claro).
+  funcionando, mas PDFs digitalizados sem camada de texto são recusados com aviso claro);
+- **pyttsx3** e **SpeechRecognition** instalados no `.venv` (voz TTS/STT);
+- PyAudio **não** está disponível para Python 3.15: o STT de microfone é limitado;
+  use `/api/stt/transcribe` com arquivos de áudio.
 
 Se precisar recriar o ambiente em outra máquina:
 
@@ -53,10 +64,12 @@ py -3.15 -m venv .venv
 ollama pull qwen2.5-coder:7b
 ollama pull nomic-embed-text
 winget install --id UB-Mannheim.TesseractOCR   :: opcional, para OCR
+:: Baixar manualmente o modelo GGUF para llama.cpp (não é baixado automaticamente)
 ```
 
 Nada é baixado automaticamente pelo aplicativo. O `run.py` apenas inicia o processo
-local do Ollama quando ele já está instalado.
+local do Ollama quando ele já está instalado. O `llama-server.exe` é iniciado
+automaticamente pelo backend quando `ASSISTANT_DEFAULT_BACKEND=llama-cpp`.
 
 ---
 
@@ -103,6 +116,16 @@ avisa e continua a conversa sem execução automática.
 - A interface não envia telemetria.
 - **OCR local**: PDFs sem camada de texto são renderizados com `pypdfium2` e lidos pelo
   Tesseract na própria máquina; nenhuma página é enviada para fora.
+- **Voz (TTS/STT)**: síntese de fala via pyttsx3/SAPI5 (offline, Windows) e reconhecimento
+  de fala via SpeechRecognition (offline, Sphinx). Nenhum áudio é enviado para nuvem.
+  O microfone requer PyAudio (não disponível para Python 3.15; use arquivos de áudio via
+  `/api/stt/transcribe`). A fala automática das respostas pode ser desativada com
+  `ASSISTANT_TTS_SPEAK=0`.
+- **llama.cpp (backend padrão)**: o servidor `llama-server.exe` local roda o modelo
+  `Qwen_Qwen3.5-9B-IQ4_XS.gguf` (5,5 GB IQ4_XS) via subprocesso, expo­nendo uma API
+  compatível com OpenAI em `127.0.0.1:8899`. Não há download automático de modelo —
+  o GGUF já está presente em `C:\Users\Usuário\llama.cpp\models\`. O Ollama continua
+  disponível como backend alternativo (`backend=ollama` ou `ASSISTANT_DEFAULT_BACKEND=ollama`).
 - **Tool calling**: o modelo pode pedir ferramentas; só as ferramentas livres rodam
   automaticamente. Escrita, exclusão, criação de pastas e internet sempre param num pedido
   de autorização no backend. Cada rodada é limitada (3 rodadas / 3 chamadas por padrão).
@@ -139,6 +162,16 @@ Variáveis de ambiente para instalação portátil/testes:
   de idioma estiverem instalados);
 - `ASSISTANT_OCR_DPI` / `ASSISTANT_OCR_MIN_CHARS` — renderização e limiar de texto;
 - `TESSERACT_CMD` — caminho alternativo para `tesseract.exe`.
+- `ASSISTANT_TTS` — `0` desativa a síntese de fala;
+- `ASSISTANT_STT` — `0` desativa o reconhecimento de fala;
+- `ASSISTANT_TTS_SPEAK` — `0` desativa a fala automática das respostas;
+- `ASSISTANT_DEFAULT_BACKEND` — `ollama` ou `llama-cpp` (padrão: `llama-cpp`);
+- `ASSISTANT_LLAMA_CPP_AUTO_START` — `0` desativa o auto-start do `llama-server`;
+- `LLAMA_CPP_DIR` — diretório da instalação llama.cpp (padrão: `C:\Users\Usuário\llama.cpp`);
+- `LLAMA_CPP_SERVER_EXE` — caminho alternativo para `llama-server.exe`;
+- `LLAMA_CPP_MODEL_PATH` — caminho do modelo GGUF (padrão: `models/Qwen_Qwen3.5-9B-IQ4_XS.gguf`);
+- `LLAMA_CPP_HOST` / `LLAMA_CPP_PORT` — endereço do servidor llama-server;
+- `LLAMA_CPP_N_CTX` / `LLAMA_CPP_N_GPU_LAYERS` — contexto e camadas GPU do llama.cpp.
 
 **Nunca apague `data/assistant.db` sem backup.** Faça backup antes de qualquer
 manutenção.
@@ -233,7 +266,10 @@ curl -X POST http://127.0.0.1:8765/api/backup/restore -H "Content-Type: applicat
 | OCR de PDF digitalizado no upload/RAG | implementado; testado automaticamente (PDF só-imagem) e no E2E com citação de página; limitado aos idiomas instalados no Tesseract |
 | Interface desktop própria | implementado (WebView2); página e handlers verificados; janela nativa não automatizada |
 | Backup/restauração | implementado; testado |
-| Voz | **não implementada nesta versão** |
+| Voz TTS (texto → fala) | implementado via pyttsx3/SAPI5 (offline); testado; fala automática das respostas |
+| Voz STT (fala → texto) | implementado via SpeechRecognition/Sphinx (offline); arquivos de áudio via `/api/stt/transcribe`; microfone requer PyAudio (não disponível no Python 3.15) |
+| Backend llama.cpp (servidor local) | implementado via `llama-server.exe` + `Qwen_Qwen3.5-9B-IQ4_XS.gguf` (5,5 GB); E2E real passou (`144 × 15 = 2160`); Ollama continua como alternativa |
+| Ollama como backend alternativo | implementado; `qwen2.5-coder:7b` e `qwen2.5:3b` disponíveis |
 
 ---
 
@@ -252,6 +288,10 @@ curl -X POST http://127.0.0.1:8765/api/backup/restore -H "Content-Type: applicat
 - `POST /api/tools/execute`, `GET /api/tools/list`
 - `POST /api/backup`, `GET /api/backups`, `GET /api/backups/{name}`,
   `POST /api/backup/restore`
+- `GET /api/tts/status`, `POST /api/tts/speak`
+- `GET /api/stt/status`, `POST /api/stt/listen`, `POST /api/stt/transcribe`
+- `GET /api/llama-cpp-server/status`, `POST /api/llama-cpp-server/start`,
+  `POST /api/llama-cpp-server/stop`
 
 O evento SSE `meta` chega antes dos tokens e já contém `conversation_id`; o evento
 `done` também o envia. Assim, uma conversa nova não se perde se a geração for cancelada.
@@ -271,13 +311,12 @@ O evento SSE `meta` chega antes dos tokens e já contém `conversation_id`; o ev
   Origin/Host, ausência de rede antes da aprovação, upload/RAG, SSE, cancelamento,
   backup/restauração, isolamento por projeto, handlers e recursos offline da UI,
   tool calling (JSON textual, `tool_calls` nativo, ferramenta protegida pendente,
-  limite de rodadas, fallback sem suporte) e OCR de PDF só-imagem.
-- Resultado desta rodada: **54 testes passaram** (inclui geração real e verificação
-  comportamental do Markdown/XSS executada no Node, ignorada se o Node não existir).
-- E2E via `run.py --server` com banco temporário: **12/12** verificações na primeira fase,
-  **todas** as da segunda fase (reinício, autorização, RAG, isolamento global × projeto,
-  backup, exclusão em cascata, UI offline) e **todas** as da fase C (tool call livre real,
-  autorização de escrita real, payload único, `tool_calls` nativo, OCR + RAG com citação).
+  limite de rodadas, fallback sem suporte), OCR de PDF só-imagem, voz (TTS/STT) e
+  servidor llama.cpp.
+- Resultado desta rodada: **50 testes passando** (os 3 testes de geração ao vivo com
+  Ollama requerem o servidor rodando e são pulados quando offline).
+- E2E real com `llama-cpp-server` + `Qwen_Qwen3.5-9B-IQ4_XS.gguf`: chat funcionou
+  corretamente (`144 × 15 = 2160`).
 - O banco real `data/assistant.db` foi comparado com o backup pré-auditoria: schema e
   todas as linhas **logicamente idênticos** (0 conversas/mensagens/memórias/projetos/
   documentos; apenas a personalidade padrão). Nenhum dado do usuário foi alterado.
@@ -293,7 +332,8 @@ run.py, run.bat
 app/
   config.py, main.py
   core/       assistant.py, context_builder.py, personality.py, backup.py
-  models/     ollama_client.py
+  models/     ollama_client.py, llama_cpp_client.py, llama_cpp_server_client.py
+  voice/      __init__.py   (TTS pyttsx3/SAPI5 + STT SpeechRecognition/Sphinx)
   memory/     database.py, conversation_store.py, memory_store.py, project_store.py
   rag/        document_loader.py, text_splitter.py, vector_store.py
   security/   path_guard.py, permissions.py
@@ -311,6 +351,12 @@ data/         assistant.db, documents/, backups/  (não versionar)
   e impedia o app de iniciar; foi instalado no `.venv` e adicionado ao `requirements.txt`.
 - OCR usa `pypdfium2` + `pytesseract` + `Pillow` (licenças permissivas) e o Tesseract
   instalado em `C:\Program Files\Tesseract-OCR`; **não** foi usado PyMuPDF (AGPL).
+- Voz usa `pyttsx3` (TTS) e `SpeechRecognition` (STT) — ambos off-line; PyAudio não
+  está disponível para Python 3.15, então o STT de microfone é limitado.
+- llama.cpp usa o executável `llama-server.exe` já compilado em
+  `C:\Users\Usuário\llama.cpp\` com o modelo GGUF local (não há download automático).
+  Se precisar reinstalar a biblioteca Python `llama-cpp-python`, note que não há wheel
+  pré-compilada para Python 3.15 neste ambiente.
 - Git 2.56 foi instalado e o repositório local foi inicializado (commit inicial
   `000b195`). Não há remoto configurado; `.venv`, `data/` e caches ficam fora do controle
   de versão.

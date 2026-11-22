@@ -11,6 +11,9 @@ os.environ["ASSISTANT_DATA_DIR"] = str(_TEST_DATA)
 os.environ["ASSISTANT_DB_PATH"] = str(_TEST_DATA / "assistant.db")
 os.environ["ASSISTANT_TESTING"] = "1"
 os.environ.setdefault("ASSISTANT_MODEL", os.environ.get("ASSISTANT_MODEL", "qwen2.5-coder:7b"))
+# Nos testes, forcar Ollama como backend (mockado nos testes) para evitar
+# tentar iniciar o llama-server real.
+os.environ["ASSISTANT_DEFAULT_BACKEND"] = "ollama"
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402

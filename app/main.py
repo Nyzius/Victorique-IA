@@ -19,6 +19,7 @@ from app.core.assistant import assistant_engine
 from app.core.backup import create_backup, list_backups, backup_path, restore_backup
 from app.models.ollama_client import ollama_client
 from app.models.llama_cpp_client import llama_cpp_client
+from app.models.llama_cpp_server_client import llama_cpp_server
 from app.rag.vector_store import vector_store
 from app.rag.document_loader import document_loader
 from app.security.permissions import security_manager
@@ -27,6 +28,10 @@ from app.voice import tts_engine, stt_engine
 
 # Initialize database schema on startup
 init_db()
+
+# Auto-start do servidor llama.cpp se configurado (backend padrão).
+if settings.llama_cpp_auto_start and settings.default_backend == "llama-cpp":
+    llama_cpp_server.start(wait_seconds=60)
 
 app = FastAPI(title=settings.app_name, version=settings.version)
 
@@ -89,7 +94,7 @@ class ChatRequest(BaseModel):
     conversation_id: Optional[str] = ""
     message: str = Field(min_length=1)
     model: Optional[str] = None
-    backend: Optional[str] = None  # "ollama" ou "llama-cpp"
+    backend: Optional[str] = None  # "ollama", "llama-cpp", "llama-cpp-server"
     project_id: Optional[str] = None
     personality_id: Optional[str] = None
     enable_rag: bool = True
@@ -216,6 +221,7 @@ async def health_check():
         "tts": tts_engine.status(),
         "stt": stt_engine.status(),
         "llama_cpp": llama_cpp_client.status(),
+        "llama_cpp_server": llama_cpp_server.status(),
     }
 
 @app.get("/api/models")
@@ -329,6 +335,35 @@ async def llama_cpp_load(req: LlamaCppLoadRequest):
         raise HTTPException(status_code=400, detail=llama_cpp_client._init_error or "Falha ao carregar modelo.")
     return {"status": "loaded", "model_path": req.model_path, "n_ctx": n_ctx}
 
+
+# ----------------- llama.cpp server (backend padrão) -----------------
+class LlamaCppServerStartRequest(BaseModel):
+    wait_seconds: Optional[int] = 60
+
+
+@app.get("/api/llama-cpp-server/status")
+async def llama_cpp_server_status():
+    # Tenta auto-start se não estiver vivo e o backend padrão for llama-cpp.
+    if not llama_cpp_server.available and settings.default_backend == "llama-cpp":
+        llama_cpp_server.start(wait_seconds=30)
+    return llama_cpp_server.status()
+
+
+@app.post("/api/llama-cpp-server/start")
+async def llama_cpp_server_start(req: LlamaCppServerStartRequest):
+    ok = llama_cpp_server.start(wait_seconds=req.wait_seconds or 60)
+    if not ok:
+        raise HTTPException(
+            status_code=400, detail=llama_cpp_server._init_error or "Falha ao iniciar servidor."
+        )
+    return {"status": "started", "base_url": llama_cpp_server.base_url}
+
+
+@app.post("/api/llama-cpp-server/stop")
+async def llama_cpp_server_stop():
+    llama_cpp_server.stop()
+    return {"status": "stopped"}
+
 # ----------------- Chat (Streaming) -----------------
 @app.post("/api/chat")
 async def chat_endpoint(req: ChatRequest, request: Request):
@@ -354,11 +389,12 @@ async def chat_endpoint(req: ChatRequest, request: Request):
         )
 
     async def event_generator():
+        backend = req.backend or settings.default_backend
         agen = assistant_engine.chat_stream(
             conversation_id=conv["id"],
             user_message=req.message,
             model=req.model or _current_model(),
-            backend=req.backend,
+            backend=backend,
             project_id=req.project_id,
             personality_id=req.personality_id,
             enable_rag=req.enable_rag,

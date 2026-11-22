@@ -7,8 +7,9 @@ from app.memory.conversation_store import conversation_store
 from app.core.context_builder import context_builder
 from app.models.ollama_client import ollama_client
 from app.models.llama_cpp_client import llama_cpp_client
+from app.models.llama_cpp_server_client import llama_cpp_server
 from app.tools.registry import tool_registry
-from app.config import settings
+from app.config import settings, DEFAULT_LLAMA_CPP_MODEL
 from app.voice import tts_engine
 
 logger = logging.getLogger("assistant")
@@ -162,8 +163,17 @@ class AssistantEngine:
         call, tokens are buffered instead of being shown to the user. If the
         buffer turns out to be ordinary text, it is flushed unchanged.
         """
-        use_llama_cpp = state.get("use_llama_cpp", False)
-        client = llama_cpp_client if use_llama_cpp else ollama_client
+        backend_name = state.get("backend_name", "ollama")
+        # "llama-cpp" (biblioteca Python) pode nao estar instalada; nesse caso
+        # usamos o servidor HTTP (llama-cpp-server) como fallback.
+        if backend_name == "llama-cpp" and not llama_cpp_client.available:
+            client = llama_cpp_server
+        elif backend_name == "llama-cpp":
+            client = llama_cpp_client
+        elif backend_name == "llama-cpp-server":
+            client = llama_cpp_server
+        else:
+            client = ollama_client
         async for token in client.chat_stream(
             tool_calls_out=state["calls"],
             **chat_kwargs,
@@ -264,27 +274,53 @@ class AssistantEngine:
             content=user_message
         )
 
+        # Seleciona o backend de inferência:
+        #   "ollama" -> servidor Ollama (HTTP)
+        #   "llama-cpp" -> biblioteca llama-cpp-python (se instalada)
+        #   "llama-cpp-server" -> servidor llama-server.exe (subprocesso local)
+        backend_name = (backend or settings.default_backend or "ollama").strip().lower()
+        use_llama_cpp_server = backend_name in ("llama-cpp", "llama-cpp-server")
+        use_llama_cpp_lib = backend_name == "llama-cpp" and llama_cpp_client.available
+
         selected_model = model or settings.default_model
-        # Seleciona o backend de inferência. "llama-cpp" usa o cliente local
-        # GGUF; qualquer outro valor (ou None) usa o Ollama, que continua sendo
-        # o padrão e não é afetado por esta mudança.
-        use_llama_cpp = (backend or "ollama").strip().lower() == "llama-cpp"
-        if use_llama_cpp and not llama_cpp_client.available:
-            yield _event({
-                "type": "error",
-                "message": (
-                    "llama.cpp não está disponível. Carregue um modelo GGUF via "
-                    "POST /api/llama-cpp/load ou use o backend Ollama (padrão)."
-                ),
-            })
-            yield _event({
-                "type": "done",
-                "conversation_id": conversation_id,
-                "message_id": None,
-                "content": "",
-                "tool_calls": 0,
-            })
-            return
+        # Quando o backend é llama-cpp-server, o modelo deve ser o caminho
+        # do GGUF (ou o nome registrado no servidor), não o nome do Ollama.
+        if backend_name in ("llama-cpp", "llama-cpp-server"):
+            selected_model = settings.llama_cpp_model_path or str(
+                DEFAULT_LLAMA_CPP_MODEL if 'DEFAULT_LLAMA_CPP_MODEL' in dir() else ""
+            )
+
+        if use_llama_cpp_server and not llama_cpp_server.available:
+            # Se o backend nao foi explicitamente escolhido pelo usuario,
+            # cai de volta para o Ollama em vez de falhar.
+            if backend is None:
+                backend_name = "ollama"
+                use_llama_cpp_server = False
+                use_llama_cpp_lib = False
+                selected_model = model or settings.default_model
+                logger.warning(
+                    "llama-cpp-server nao disponível; usando Ollama como fallback"
+                )
+            else:
+                # Tenta auto-start se o backend padrão for llama-cpp.
+                if settings.default_backend in ("llama-cpp", "llama-cpp-server"):
+                    llama_cpp_server.start(wait_seconds=30)
+                if not llama_cpp_server.available:
+                    yield _event({
+                        "type": "error",
+                        "message": (
+                            "llama.cpp-server não está disponível. Inicie com "
+                            "POST /api/llama-cpp-server/start ou use o backend Ollama."
+                        ),
+                    })
+                    yield _event({
+                        "type": "done",
+                        "conversation_id": conversation_id,
+                        "message_id": None,
+                        "content": "",
+                        "tool_calls": 0,
+                    })
+                    return
 
         full_response_parts: List[str] = []
         sources: list = []
@@ -298,6 +334,7 @@ class AssistantEngine:
                 "type": "meta",
                 "conversation_id": conversation_id,
                 "model": selected_model,
+                "backend": backend_name,
             })
 
             history = conversation_store.get_messages(conversation_id)
@@ -328,7 +365,8 @@ class AssistantEngine:
                     "text": [],
                     "calls": [],
                     "strip_fence": False,
-                    "use_llama_cpp": use_llama_cpp,
+                    "use_llama_cpp": use_llama_cpp_server or use_llama_cpp_lib,
+                    "backend_name": backend_name,
                 }
 
                 try:
@@ -360,7 +398,8 @@ class AssistantEngine:
                             "text": [],
                             "calls": [],
                             "strip_fence": False,
-                            "use_llama_cpp": use_llama_cpp,
+                            "use_llama_cpp": False,
+                            "backend_name": "ollama",
                         }
                         async for token in self._stream_model_round(
                             state,
